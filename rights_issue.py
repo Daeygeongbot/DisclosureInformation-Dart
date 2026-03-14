@@ -504,7 +504,7 @@ def extract_xml_details(api_key, rcept_no, prefer_stock=None):
 # ==========================================================
 def get_and_update_yusang():
     start_date = "20260101"
-    end_date = "20260131"
+    end_date = "20260115"
 
     print(f"{start_date} ~ {end_date} 유상증자 공시 탐색 중...")
 
