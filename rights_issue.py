@@ -88,6 +88,12 @@ def fix_date(raw_date_str):
     return '-'
 
 
+def normalize_line(s):
+    s = str(s or '').replace('\xa0', ' ')
+    s = re.sub(r'\s+', ' ', s).strip()
+    return s
+
+
 def unique_keep_order(seq):
     seen = set()
     out = []
@@ -158,35 +164,36 @@ def fetch_dart_list_all(url, params):
 # =========================================================
 # XML 파싱
 # =========================================================
-def get_xml_clean_text(api_key, rcept_no):
+def get_xml_text_and_lines(api_key, rcept_no):
     url = "https://opendart.fss.or.kr/api/document.xml"
     params = {'crtfc_key': api_key, 'rcept_no': rcept_no}
 
     try:
         res = requests.get(url, params=params, stream=True, timeout=30)
         if res.status_code != 200:
-            return ''
+            return '', []
 
         with zipfile.ZipFile(io.BytesIO(res.content)) as z:
             xml_files = [name for name in z.namelist() if name.endswith('.xml')]
             if not xml_files:
-                return ''
+                return '', []
 
             with z.open(xml_files[0]) as f:
                 xml_content = f.read().decode('utf-8', errors='ignore')
                 soup = BeautifulSoup(xml_content, 'html.parser')
 
-                for tag in soup.find_all(['td', 'th', 'p', 'div', 'li', 'span']):
-                    tag.append(' ')
+                raw_text = soup.get_text(separator='\n', strip=True)
+                lines = [normalize_line(x) for x in raw_text.splitlines()]
+                lines = [x for x in lines if x]
 
-                raw_text = soup.get_text(separator=' ', strip=True)
-                clean_text = raw_text.replace('\xa0', ' ')
+                clean_text = ' '.join(lines)
                 clean_text = re.sub(r'\s+', ' ', clean_text).strip()
-                return clean_text
+
+                return clean_text, lines
 
     except Exception as e:
         print(f"문서 XML 에러 ({rcept_no}): {e}")
-        return ''
+        return '', []
 
 
 def extract_date_by_labels(text, labels):
@@ -202,98 +209,101 @@ def extract_date_by_labels(text, labels):
     return '-'
 
 
-def extract_discount_rate(text):
-    if not text:
+def is_blank_marker(s):
+    s = normalize_line(s)
+    return s in {'-', '－', '없음', '해당없음', '해당 없음', ''}
+
+
+def parse_number_token(s):
+    s = normalize_line(s)
+    if is_blank_marker(s):
+        return None
+    m = re.fullmatch(r'(\d{1,3}(?:,\d{3})*|\d+)', s)
+    if not m:
+        return None
+    return to_int(m.group(1))
+
+
+def parse_percent_token(s):
+    s = normalize_line(s)
+    if is_blank_marker(s):
         return None
 
-    candidates = []
+    m = re.fullmatch(r'([+\-]?\d+(?:\.\d+)?)\s*%?', s)
+    if not m:
+        return None
 
-    # 예: 할인율 10%, 할증률 5.5%, 할인율 -10.0%
-    pattern = r'(할인|할증)\s*[율률][^\d+\-]{0,20}([+\-]?\d+(?:\.\d+)?)\s*%'
-    for m in re.finditer(pattern, text):
-        kind = m.group(1)
-        num = to_float(m.group(2))
-        if num is None:
-            continue
-
-        if kind == '할인' and num > 0:
-            num = -num
-        elif kind == '할증' and num < 0:
-            num = abs(num)
-
-        if -100 < num < 100:
-            candidates.append(num)
-
-    # 퍼센트 기호 없는 경우 fallback
-    if not candidates:
-        pattern2 = r'(할인|할증)\s*[율률][^\d+\-]{0,20}([+\-]?\d+(?:\.\d+)?)'
-        for m in re.finditer(pattern2, text):
-            kind = m.group(1)
-            num = to_float(m.group(2))
-            if num is None:
-                continue
-
-            if kind == '할인' and num > 0:
-                num = -num
-            elif kind == '할증' and num < 0:
-                num = abs(num)
-
-            if -100 < num < 100:
-                candidates.append(num)
-
-    candidates = unique_keep_order(candidates)
-    return candidates[0] if candidates else None
+    return to_float(m.group(1))
 
 
-def extract_number_candidates_near_labels(text, labels, window=120):
-    if not text:
-        return []
+def extract_labeled_number_from_lines(lines, labels):
+    """
+    같은 줄에 '라벨 + 값'이 같이 있을 때만 숫자 추출.
+    값이 '-'이거나 공란이면 None 반환.
+    주변 숫자 추측 금지.
+    """
+    if not lines:
+        return None
 
-    candidates = []
-
+    patterns = []
     for label in labels:
-        for m in re.finditer(re.escape(label), text):
-            snippet = text[m.end(): m.end() + window]
-            nums = re.findall(r'(?<!\d)(\d{1,3}(?:,\d{3})+|\d+)(?!\d)', snippet)
-            for num in nums:
-                val = to_int(num)
-                if val > 0:
-                    candidates.append(val)
+        patterns.extend([
+            rf'{re.escape(label)}\s*(?:\([^)]+\))?\s*[:：]?\s*(\-|－|\d{{1,3}}(?:,\d{{3}})*|\d+)\b',
+            rf'{re.escape(label)}\s*[:：]?\s*(\-|－|\d{{1,3}}(?:,\d{{3}})*|\d+)\b',
+        ])
 
-    return unique_keep_order(candidates)
+    for line in lines:
+        line_norm = normalize_line(line)
+        for pattern in patterns:
+            m = re.search(pattern, line_norm)
+            if m:
+                token = normalize_line(m.group(1))
+                if is_blank_marker(token):
+                    return None
+                val = parse_number_token(token)
+                if val is not None and val > 0:
+                    return val
+
+    return None
 
 
-def pick_best_price_candidate(candidates, expected=None, min_value=1, max_value=50000000):
-    valid = [x for x in candidates if min_value <= x <= max_value]
-    if not valid:
+def extract_labeled_rate_from_lines(lines):
+    """
+    할인율/할증률도 같은 줄 명시값만 사용.
+    값이 없으면 None.
+    """
+    if not lines:
         return None
 
-    if expected and expected > 0:
-        valid.sort(key=lambda x: (abs(x - expected), x))
-        return valid[0]
-
-    return valid[0]
-
-
-def extract_issue_price_from_text(text, expected=None):
-    labels = [
-        '확정 발행가액',
-        '확정발행가액',
-        '1주당 발행가액',
-        '발행가액'
+    patterns = [
+        r'(할인)\s*[율률]\s*[:：]?\s*(\-|－|[+\-]?\d+(?:\.\d+)?)\s*%?',
+        r'(할증)\s*[율률]\s*[:：]?\s*(\-|－|[+\-]?\d+(?:\.\d+)?)\s*%?',
     ]
-    candidates = extract_number_candidates_near_labels(text, labels, window=100)
-    return pick_best_price_candidate(candidates, expected=expected, min_value=1, max_value=50000000)
 
+    for line in lines:
+        line_norm = normalize_line(line)
+        for pattern in patterns:
+            m = re.search(pattern, line_norm)
+            if m:
+                kind = m.group(1)
+                token = normalize_line(m.group(2))
 
-def extract_base_price_from_text(text, expected=None):
-    labels = [
-        '산정 기준주가',
-        '산정기준주가',
-        '기준주가'
-    ]
-    candidates = extract_number_candidates_near_labels(text, labels, window=100)
-    return pick_best_price_candidate(candidates, expected=expected, min_value=1, max_value=50000000)
+                if is_blank_marker(token):
+                    return None
+
+                num = parse_percent_token(token)
+                if num is None:
+                    return None
+
+                if kind == '할인' and num > 0:
+                    num = -num
+                elif kind == '할증' and num < 0:
+                    num = abs(num)
+
+                if -10000 < num < 10000:
+                    return num
+
+    return None
 
 
 def extract_investor_from_text(text):
@@ -314,10 +324,23 @@ def extract_investor_from_text(text):
 
 
 def extract_xml_details(api_key, rcept_no):
-    text = get_xml_clean_text(api_key, rcept_no)
+    text, lines = get_xml_text_and_lines(api_key, rcept_no)
+
+    issue_price = extract_labeled_number_from_lines(
+        lines,
+        ['확정 발행가액', '확정발행가액', '1주당 발행가액', '발행가액']
+    )
+
+    base_price = extract_labeled_number_from_lines(
+        lines,
+        ['산정 기준주가', '산정기준주가', '기준주가']
+    )
+
+    discount_rate = extract_labeled_rate_from_lines(lines)
 
     return {
         'clean_text': text,
+        'lines': lines,
         'board_date': first_nonempty(
             extract_date_by_labels(text, ['최초 이사회결의일', '최초이사회결의일']),
             extract_date_by_labels(text, ['이사회결의일'])
@@ -325,7 +348,10 @@ def extract_xml_details(api_key, rcept_no):
         'pay_date': extract_date_by_labels(text, ['납입일']),
         'div_date': extract_date_by_labels(text, ['배당기산일']),
         'list_date': extract_date_by_labels(text, ['상장 예정일', '상장예정일']),
-        'investor': extract_investor_from_text(text)
+        'investor': extract_investor_from_text(text),
+        'issue_price': issue_price,
+        'base_price': base_price,
+        'discount_rate': discount_rate,
     }
 
 
@@ -384,35 +410,10 @@ def make_row_data(row, xml_data, cls_map):
         purposes.append("기타")
     purpose_str = ", ".join(purposes) if purposes else "-"
 
-    # 확정발행가(원) : 총액 / 신규발행주식수 우선
-    issue_price_math = None
-    if total_amt > 0 and new_shares > 0:
-        issue_price_math = int(round(total_amt / new_shares))
-
-    issue_price_xml = extract_issue_price_from_text(xml_data['clean_text'], expected=issue_price_math)
-    issue_price_int = issue_price_math if issue_price_math and issue_price_math > 0 else issue_price_xml
-
-    # 할인율
-    discount_val = extract_discount_rate(xml_data['clean_text'])
-
-    # 기준주가 : XML 우선, 없으면 issue/discount 역산
-    expected_base = None
-    if issue_price_int and discount_val is not None and (1 + discount_val / 100) != 0:
-        expected_base = issue_price_int / (1 + discount_val / 100)
-
-    base_price_xml = extract_base_price_from_text(xml_data['clean_text'], expected=expected_base)
-
-    base_price_int = None
-    if base_price_xml and base_price_xml > 0:
-        base_price_int = base_price_xml
-    elif issue_price_int and discount_val is not None and (1 + discount_val / 100) != 0:
-        base_price_int = int(round(issue_price_int / (1 + discount_val / 100)))
-
-    # 할인율 재보정
-    if issue_price_int and base_price_int and base_price_int > 0:
-        derived_discount = round((issue_price_int / base_price_int - 1) * 100, 2)
-        if discount_val is None or abs(discount_val - derived_discount) > 0.3:
-            discount_val = derived_discount
+    # 이제는 '없는 값'을 수학적으로 만들지 않음
+    issue_price_int = xml_data.get('issue_price')
+    base_price_int = xml_data.get('base_price')
+    discount_val = xml_data.get('discount_rate')
 
     # 증자비율
     ratio = f"{(new_shares / old_shares * 100):.2f}%" if old_shares > 0 else "-"
@@ -424,11 +425,6 @@ def make_row_data(row, xml_data, cls_map):
     base_price_str = format_int(base_price_int) if base_price_int else "-"
     total_amt_uk = f"{(total_amt / 100000000):,.2f}" if total_amt > 0 else "0.00"
     discount_str = format_rate(discount_val)
-
-    # 간단 검산 로그
-    if issue_price_int and base_price_int and issue_price_int > 0 and base_price_int > 0:
-        if issue_price_int > 50000000 or base_price_int > 50000000:
-            print(f" ⚠️ {corp_name} ({rcept_no}) 발행가/기준주가 비정상 추정치 감지")
 
     link = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}"
 
@@ -464,7 +460,6 @@ def build_rcept_row_map(all_sheet_data):
     rcept_row_map = {}
 
     for idx, row in enumerate(all_sheet_data):
-        # 보통 1행은 헤더이므로 skip
         if idx == 0:
             continue
 
@@ -512,7 +507,7 @@ def get_and_update_yusang(start_date, end_date):
     df_filtered = df_filtered.drop_duplicates(subset=['rcept_no'])
     df_report_map = df_filtered[['rcept_no', 'report_nm']].drop_duplicates(subset=['rcept_no'])
 
-    # 3) piicDecsn.json은 최초접수일 기준 이슈 있으므로 넉넉하게 180일 확장
+    # 3) piicDecsn.json은 최초접수일 기준 이슈 있으므로 180일 확장
     corp_codes = df_filtered['corp_code'].astype(str).unique()
     detail_dfs = []
 
@@ -607,7 +602,10 @@ def get_and_update_yusang(start_date, end_date):
         if sheet_row_padded != new_row_str:
             corp_name = row.get('corp_name', '')
             print(f" 🔄 [업데이트] {corp_name} 값이 변경/확정되었습니다. 시트를 덮어씁니다.")
-            worksheet.update(range_name=f'A{row_idx}:U{row_idx}', values=[new_row])
+            try:
+                worksheet.update(range_name=f'A{row_idx}:U{row_idx}', values=[new_row])
+            except TypeError:
+                worksheet.update(f'A{row_idx}:U{row_idx}', [new_row])
             update_count += 1
             time.sleep(1)
 
@@ -618,4 +616,5 @@ def get_and_update_yusang(start_date, end_date):
 
 
 if __name__ == "__main__":
-    get_and_update_yusang('20260101', '20260131')
+    # 원하는 날짜 직접 입력
+    get_and_update_yusang('20260201', '20260228')
