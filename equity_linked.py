@@ -177,15 +177,15 @@ def make_row_data(row, xml_data, config, cls_map):
 
 
 def get_and_update_bonds():
-    end_date = datetime.now().strftime('%Y%m%d')
-    start_date = (datetime.now() - timedelta(days=12)).strftime('%Y%m%d')
+    start_date = '20260101'
+    end_date = '20260131'
 
-    print("최근 12일 주식연계채권(CB, BW, EB) 공시 탐색 중...")
-    
+    print(f"{start_date} ~ {end_date} 주식연계채권(CB, BW, EB) 공시 탐색 중...")
+
     # 공시 목록 호출
     list_url = "https://opendart.fss.or.kr/api/list.json"
     list_params = {
-        'crtfc_key': dart_key, 'bgn_de': start_date, 'end_de': end_date, 
+        'crtfc_key': dart_key, 'bgn_de': start_date, 'end_de': end_date,
         'pblntf_ty': 'B', 'pblntf_detail_ty': 'B001', 'page_count': '100'
     }
     all_filings = fetch_dart_json(list_url, list_params)
@@ -237,7 +237,7 @@ def get_and_update_bonds():
         }
     ]
 
-    worksheet = sh.worksheet('주식연계채권')
+    worksheet = sh.worksheet('D_주식연계채권')
     cls_map = {'Y': '유가', 'K': '코스닥', 'N': '코넥스', 'E': '기타'}
 
     # 시트의 기존 데이터 읽기
