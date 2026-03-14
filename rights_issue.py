@@ -483,10 +483,7 @@ def build_rcept_row_map(all_sheet_data):
 # =========================================================
 # 메인
 # =========================================================
-def get_and_update_yusang():
-    end_date = datetime.now().strftime('%Y%m%d')
-    start_date = (datetime.now() - timedelta(days=7)).strftime('%Y%m%d')
-
+def get_and_update_yusang(start_date, end_date):
     print(f"{start_date} ~ {end_date} 유상증자 공시 탐색 중...")
 
     # 1) list.json 전체 조회
@@ -621,4 +618,4 @@ def get_and_update_yusang():
 
 
 if __name__ == "__main__":
-    get_and_update_yusang()
+    get_and_update_yusang('20260101', '20260131')
