@@ -24,6 +24,15 @@ TOTAL_COLS = 21
 NEW_RCEPT_IDX = 20   # 21번째 컬럼 (0-based)
 OLD_RCEPT_IDX = 19   # 20번째 컬럼 (기존 구조 호환용)
 
+# 기존 행 업데이트 시 딱 이 5개 컬럼만 수정
+TARGET_COLS = {
+    6: "신규발행주식수",
+    7: "확정발행가(원)",
+    8: "기준주가",
+    9: "확정발행금액(억원)",
+    11: "증자전 주식수",
+}
+
 
 # ==========================================================
 # 공통 유틸
@@ -61,6 +70,133 @@ def to_float(val):
         return float(str(val).replace(',', '').replace('%', '').strip())
     except:
         return 0.0
+
+def has_meaningful_value(col_idx, value):
+    s = str(value).strip()
+    if s in {"", "-", "nan", "None"}:
+        return False
+
+    if col_idx in [6, 7, 8, 11]:
+        return to_float(s) > 0
+
+    if col_idx == 9:
+        return to_float(s) > 0
+
+    return True
+
+def keep_old_if_new_invalid(col_idx, new_val, old_val):
+    if has_meaningful_value(col_idx, new_val):
+        return str(new_val).strip()
+
+    old_s = str(old_val).strip()
+    if old_s not in {"", "nan", "None"}:
+        return old_s
+    return str(new_val).strip()
+
+def extract_number_from_text(text):
+    if not text:
+        return None
+    matches = re.findall(r'([+\-]?\d[\d,]*(?:\.\d+)?)', str(text))
+    if matches:
+        return matches[-1].strip()
+    return None
+
+def extract_first_by_row_patterns(rows, patterns):
+    for cells in rows:
+        row_text = " ".join([str(c).strip() for c in cells if str(c).strip()])
+        if not row_text:
+            continue
+        for pat in patterns:
+            m = re.search(pat, row_text, flags=re.IGNORECASE)
+            if m:
+                return m.group(1).strip()
+    return None
+
+def find_value_near_label(text, label_patterns, value_pattern, window=120):
+    for label_pat in label_patterns:
+        for m in re.finditer(label_pat, text, flags=re.IGNORECASE):
+            snippet = text[m.end():m.end() + window]
+            found = re.search(value_pattern, snippet, flags=re.IGNORECASE)
+            if found:
+                return found.group(1).strip()
+    return None
+
+def find_date_from_lines(lines, include_keywords, exclude_keywords=None):
+    exclude_keywords = exclude_keywords or []
+    include_compact = [compact_text(x) for x in include_keywords]
+    exclude_compact = [compact_text(x) for x in exclude_keywords]
+
+    for i, line in enumerate(lines):
+        c_line = compact_text(line)
+
+        if all(k in c_line for k in include_compact) and not any(k in c_line for k in exclude_compact):
+            m = re.search(r'(\d{4}[년\.\-/\s]+\d{1,2}[월\.\-/\s]+\d{1,2}일?)', line)
+            if m:
+                return format_date_display(m.group(1))
+
+            if i + 1 < len(lines):
+                nxt = lines[i + 1]
+                m2 = re.search(r'(\d{4}[년\.\-/\s]+\d{1,2}[월\.\-/\s]+\d{1,2}일?)', nxt)
+                if m2:
+                    return format_date_display(m2.group(1))
+
+    return '-'
+
+def find_line_value(lines, include_keywords, exclude_keywords=None):
+    exclude_keywords = exclude_keywords or []
+    include_compact = [compact_text(x) for x in include_keywords]
+    exclude_compact = [compact_text(x) for x in exclude_keywords]
+
+    for i, line in enumerate(lines):
+        c_line = compact_text(line)
+
+        if all(k in c_line for k in include_compact) and not any(k in c_line for k in exclude_compact):
+            parts = re.split(r'[:：]', line, maxsplit=1)
+            if len(parts) == 2 and parts[1].strip():
+                return parts[1].strip()
+
+            if i + 1 < len(lines):
+                nxt = lines[i + 1].strip()
+                if nxt:
+                    return nxt
+
+    return None
+
+def get_table_rows_from_soup(soup):
+    table_rows = []
+
+    for tr in soup.find_all('tr'):
+        cells = []
+        for td in tr.find_all(['th', 'td']):
+            txt = normalize_text(td.get_text(" ", strip=True))
+            if txt:
+                cells.append(txt)
+        if cells:
+            table_rows.append(cells)
+
+    return table_rows
+
+def find_numeric_value_in_rows(rows, include_keywords, exclude_keywords=None):
+    exclude_keywords = exclude_keywords or []
+    include_compact = [compact_text(x) for x in include_keywords]
+    exclude_compact = [compact_text(x) for x in exclude_keywords]
+
+    for cells in rows:
+        row_join = " ".join(cells)
+        row_compact = compact_text(row_join)
+
+        if all(k in row_compact for k in include_compact) and not any(k in row_compact for k in exclude_compact):
+            # 우측 셀부터 숫자 탐색
+            for cell in reversed(cells):
+                num = extract_number_from_text(cell)
+                if num is not None:
+                    return num
+
+            num = extract_number_from_text(row_join)
+            if num is not None:
+                return num
+
+    return None
 
 
 # ==========================================================
@@ -120,61 +256,10 @@ def fetch_dart_list_all(url, params):
 
 
 # ==========================================================
-# XML 추출 보조 함수
-# ==========================================================
-def find_date_from_lines(lines, include_keywords, exclude_keywords=None):
-    exclude_keywords = exclude_keywords or []
-    include_compact = [compact_text(x) for x in include_keywords]
-    exclude_compact = [compact_text(x) for x in exclude_keywords]
-
-    for i, line in enumerate(lines):
-        c_line = compact_text(line)
-
-        if all(k in c_line for k in include_compact) and not any(k in c_line for k in exclude_compact):
-            m = re.search(r'(\d{4}[년\.\-/\s]+\d{1,2}[월\.\-/\s]+\d{1,2}일?)', line)
-            if m:
-                return format_date_display(m.group(1))
-
-            if i + 1 < len(lines):
-                nxt = lines[i + 1]
-                m2 = re.search(r'(\d{4}[년\.\-/\s]+\d{1,2}[월\.\-/\s]+\d{1,2}일?)', nxt)
-                if m2:
-                    return format_date_display(m2.group(1))
-
-    return '-'
-
-def find_value_near_label(text, label_patterns, value_pattern, window=160):
-    for label_pat in label_patterns:
-        for m in re.finditer(label_pat, text, flags=re.IGNORECASE):
-            snippet = text[m.end():m.end() + window]
-            found = re.search(value_pattern, snippet, flags=re.IGNORECASE)
-            if found:
-                return found.group(1).strip()
-    return None
-
-def find_line_value(lines, include_keywords, exclude_keywords=None):
-    exclude_keywords = exclude_keywords or []
-    include_compact = [compact_text(x) for x in include_keywords]
-    exclude_compact = [compact_text(x) for x in exclude_keywords]
-
-    for i, line in enumerate(lines):
-        c_line = compact_text(line)
-
-        if all(k in c_line for k in include_compact) and not any(k in c_line for k in exclude_compact):
-            parts = re.split(r'[:：]', line, maxsplit=1)
-            if len(parts) == 2 and parts[1].strip():
-                return parts[1].strip()
-
-            if i + 1 < len(lines):
-                nxt = lines[i + 1].strip()
-                if nxt:
-                    return nxt
-
-    return None
-
-
-# ==========================================================
 # XML 원문 추출
+# - 타겟 5개 컬럼 정확도 보강용
+# - 6. 신주 발행가액
+# - 7. 기준주가
 # ==========================================================
 def extract_xml_details(api_key, rcept_no):
     url = "https://opendart.fss.or.kr/api/document.xml"
@@ -206,13 +291,13 @@ def extract_xml_details(api_key, rcept_no):
                 xml_content = f.read().decode('utf-8', errors='ignore')
 
         soup = BeautifulSoup(xml_content, 'html.parser')
-        raw_text = soup.get_text(separator='\n', strip=True)
+
+        raw_text = soup.get_text(separator='\n')
         text = normalize_text(raw_text)
         lines = [normalize_text(x) for x in raw_text.split('\n') if normalize_text(x)]
+        table_rows = get_table_rows_from_soup(soup)
 
-        # --------------------------------------------------
         # 날짜
-        # --------------------------------------------------
         extracted['first_board_date'] = find_date_from_lines(
             lines, include_keywords=['최초', '이사회결의일']
         )
@@ -229,58 +314,72 @@ def extract_xml_details(api_key, rcept_no):
         extracted['list_date'] = find_date_from_lines(lines, include_keywords=['상장예정일'])
 
         # --------------------------------------------------
-        # 확정발행가(원)
-        # 우선순위: 확정발행가액 > 확정발행가 > 1주당 발행가액 > 발행가액
+        # 6. 신주 발행가액
         # --------------------------------------------------
-        issue_price = find_value_near_label(
-            text,
-            [
-                r'확정\s*발행가액',
-                r'확정\s*발행가',
-                r'1주당\s*발행가액',
-                r'발행가액'
-            ],
-            r'([0-9]{1,3}(?:,[0-9]{3})*(?:\.\d+)?)',
-            window=120
+        issue_price = find_numeric_value_in_rows(
+            table_rows,
+            include_keywords=['신주', '발행가액'],
+            exclude_keywords=['기준주가']
         )
+
+        if not issue_price:
+            issue_price = extract_first_by_row_patterns(
+                table_rows,
+                [
+                    r'신주\s*발행가액[^0-9]{0,20}([0-9]{1,3}(?:,[0-9]{3})*(?:\.\d+)?)',
+                    r'발행가액[^0-9]{0,20}([0-9]{1,3}(?:,[0-9]{3})*(?:\.\d+)?)',
+                ]
+            )
+
+        if not issue_price:
+            issue_price = find_value_near_label(
+                text,
+                [r'신주\s*발행가액', r'발행가액'],
+                r'([0-9]{1,3}(?:,[0-9]{3})*(?:\.\d+)?)',
+                window=80
+            )
+
         if issue_price:
             extracted['issue_price'] = issue_price
 
         # --------------------------------------------------
-        # 기준주가
+        # 7. 기준주가
         # --------------------------------------------------
-        base_price = find_value_near_label(
-            text,
-            [
-                r'산정\s*기준주가',
-                r'기준주가'
-            ],
-            r'([0-9]{1,3}(?:,[0-9]{3})*(?:\.\d+)?)',
-            window=120
+        base_price = find_numeric_value_in_rows(
+            table_rows,
+            include_keywords=['기준주가']
         )
+
+        if not base_price:
+            base_price = extract_first_by_row_patterns(
+                table_rows,
+                [
+                    r'기준주가[^0-9]{0,20}([0-9]{1,3}(?:,[0-9]{3})*(?:\.\d+)?)',
+                ]
+            )
+
+        if not base_price:
+            base_price = find_value_near_label(
+                text,
+                [r'기준주가'],
+                r'([0-9]{1,3}(?:,[0-9]{3})*(?:\.\d+)?)',
+                window=80
+            )
+
         if base_price:
             extracted['base_price'] = base_price
 
-        # --------------------------------------------------
-        # 할인율 / 할인률 / 할증률
-        # --------------------------------------------------
+        # 할인율
         discount = find_value_near_label(
             text,
-            [
-                r'할인율',
-                r'할인률',
-                r'할증률',
-                r'할증율'
-            ],
+            [r'할인율', r'할인률', r'할증률', r'할증율'],
             r'([+\-]?\d+(?:\.\d+)?)',
             window=80
         )
         if discount:
             extracted['discount'] = discount + "%"
 
-        # --------------------------------------------------
         # 투자자 / 배정대상자
-        # --------------------------------------------------
         investor = (
             find_line_value(lines, ['제3자배정', '대상자']) or
             find_line_value(lines, ['배정대상자']) or
@@ -407,7 +506,7 @@ def get_and_update_yusang():
         method = str(row.get('ic_mthn', '')).strip()
 
         # 2. 신규발행주식수 / 증자전 주식수
-        # -> JSON 값을 최우선으로 고정 사용
+        # -> 이 부분은 piicDecsn.json 값 고정 사용
         ostk = to_int(row.get('nstk_ostk_cnt'))
         estk = to_int(row.get('nstk_estk_cnt'))
         new_shares = ostk + estk
@@ -432,26 +531,7 @@ def get_and_update_yusang():
         ratio = f"{(new_shares / old_shares * 100):.2f}%" if old_shares > 0 else "-"
 
         # 4. 확정발행금액(억원)
-        # 우선순위:
-        # 1) 신규발행주식수 * 확정발행가
-        # 2) 안 되면 자금조달 목적 합계 fallback
-        issue_price_num = to_float(xml_data['issue_price'])
-
-        if new_shares > 0 and issue_price_num > 0:
-            total_amt = new_shares * issue_price_num
-            total_amt_uk = f"{(total_amt / 100000000):,.2f}"
-        else:
-            fclt = to_int(row.get('fdpp_fclt'))
-            bsninh = to_int(row.get('fdpp_bsninh'))
-            op = to_int(row.get('fdpp_op'))
-            dtrp = to_int(row.get('fdpp_dtrp'))
-            ocsa = to_int(row.get('fdpp_ocsa'))
-            etc = to_int(row.get('fdpp_etc'))
-
-            total_amt = fclt + bsninh + op + dtrp + ocsa + etc
-            total_amt_uk = f"{(total_amt / 100000000):,.2f}" if total_amt > 0 else "-"
-
-        # 5. 자금용도
+        # -> 다시 4. 자금조달의 목적 합계 기준
         fclt = to_int(row.get('fdpp_fclt'))
         bsninh = to_int(row.get('fdpp_bsninh'))
         op = to_int(row.get('fdpp_op'))
@@ -459,6 +539,10 @@ def get_and_update_yusang():
         ocsa = to_int(row.get('fdpp_ocsa'))
         etc = to_int(row.get('fdpp_etc'))
 
+        total_amt = fclt + bsninh + op + dtrp + ocsa + etc
+        total_amt_uk = f"{(total_amt / 100000000):,.2f}" if total_amt > 0 else "-"
+
+        # 5. 자금용도
         purposes = []
         if fclt > 0:
             purposes.append("시설")
@@ -512,20 +596,41 @@ def get_and_update_yusang():
         new_row_str = [str(x).strip() for x in new_row]
 
         if rcept_no in existing_data_dict:
-            existing_row_str = existing_data_dict[rcept_no]['data']
+            row_idx = existing_data_dict[rcept_no]['row_idx']
+            existing_row = existing_data_dict[rcept_no]['data'][:]
 
-            existing_row_str += [''] * (len(new_row_str) - len(existing_row_str))
-            existing_row_str = existing_row_str[:len(new_row_str)]
+            existing_row += [''] * (TOTAL_COLS - len(existing_row))
+            existing_row = existing_row[:TOTAL_COLS]
 
-            if new_row_str != existing_row_str:
-                row_idx = existing_data_dict[rcept_no]['row_idx']
+            updated_row = existing_row[:]
+
+            # 딱 5개 컬럼만 업데이트
+            for col_idx in TARGET_COLS.keys():
+                updated_row[col_idx] = keep_old_if_new_invalid(
+                    col_idx,
+                    new_row_str[col_idx],
+                    existing_row[col_idx]
+                )
+
+            changed_fields = []
+            for col_idx, col_name in TARGET_COLS.items():
+                old_v = str(existing_row[col_idx]).strip()
+                new_v = str(updated_row[col_idx]).strip()
+                if old_v != new_v:
+                    changed_fields.append(f"{col_name}: {old_v} -> {new_v}")
+
+            if changed_fields:
                 try:
-                    worksheet.update(range_name=f'A{row_idx}:U{row_idx}', values=[new_row])
+                    worksheet.update(range_name=f'A{row_idx}:U{row_idx}', values=[updated_row])
                 except TypeError:
-                    worksheet.update(f'A{row_idx}:U{row_idx}', [new_row])
-                print(f"🔄 {corp_name}: 데이터 변경 감지! 최신 내용으로 자동 덮어쓰기 완료 (행: {row_idx})")
+                    worksheet.update(f'A{row_idx}:U{row_idx}', [updated_row])
+
+                print(f"🔄 {corp_name}: 타겟 5개 컬럼 업데이트 완료")
+                for msg in changed_fields:
+                    print(f"   - {msg}")
             else:
-                print(f"⏩ {corp_name}: 변경사항 없음 (패스)")
+                print(f"⏩ {corp_name}: 타겟 5개 컬럼 변경사항 없음")
+
         else:
             print(f"🆕 {corp_name}: 신규 공시 발견! 추가 대기 중...")
             data_to_add.append(new_row)
@@ -534,7 +639,7 @@ def get_and_update_yusang():
         worksheet.append_rows(data_to_add)
         print(f"✅ 유상증자: 신규 데이터 {len(data_to_add)}건 일괄 추가 완료!")
     else:
-        print("✅ 유상증자: 새로 추가할 공시는 없으며 데이터 최신화 점검을 마쳤습니다.")
+        print("✅ 유상증자: 새로 추가할 공시는 없으며 타겟 5개 컬럼 점검을 마쳤습니다.")
 
 
 if __name__ == "__main__":
