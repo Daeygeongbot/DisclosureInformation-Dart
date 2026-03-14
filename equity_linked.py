@@ -21,6 +21,10 @@ creds = json.loads(service_account_str)
 gc = gspread.service_account_from_dict(creds)
 sh = gc.open_by_key(sheet_id)
 
+# 시트 컬럼 수
+TOTAL_COLS = 26
+RCEPT_NO_COL_IDX = 25  # 0-based index (26번째 컬럼 = 접수번호)
+
 # --- [JSON 파싱] ---
 def fetch_dart_json(url, params):
     try:
@@ -94,17 +98,19 @@ def extract_bond_xml_details(api_key, rcept_no):
 # 안전한 숫자 변환 함수
 def to_int(val):
     try:
-        if pd.isna(val) or str(val).strip() == '': return 0
+        if pd.isna(val) or str(val).strip() == '':
+            return 0
         return int(float(str(val).replace(',', '').strip()))
     except:
         return 0
 
 
-# 💡 [추가] 신규 추가 & 업데이트 양쪽에서 똑같이 쓸 수 있도록 기존 포매팅 코드를 함수로 묶음
+# 💡 [수정] 보고서명 컬럼 추가
 def make_row_data(row, xml_data, config, cls_map):
     f_map = config['fields']
     rcept_no = str(row.get('rcept_no', ''))
     corp_name = row.get('corp_name', '')
+    report_nm = row.get('report_nm', '')
     
     fclt = to_int(row.get('fdpp_fclt'))
     bsninh = to_int(row.get('fdpp_bsninh'))
@@ -141,31 +147,32 @@ def make_row_data(row, xml_data, config, cls_map):
     link = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}"
     
     return [
-        config['type'],                             # 1. 구분 (CB, BW, EB)
-        corp_name,                                  # 2. 회사명
-        cls_map.get(row.get('corp_cls', ''), '기타'),# 3. 상장시장
-        str(row.get('bddd', '-')),                  # 4. 최초 이사회결의일
-        face_value_str,                             # 5. 권면총액(원)
-        str(row.get('bd_intr_ex', '-')),            # 6. Coupon (표면이자율)
-        str(row.get('bd_intr_sf', '-')),            # 7. YTM (만기이자율)
-        str(row.get('bd_mtd', '-')),                # 8. 만기
-        str(row.get(f_map['start'], '-')),          # 9. 전환청구 시작
-        str(row.get(f_map['end'], '-')),            # 10. 전환청구 종료
-        xml_data['put_option'],                     # 11. Put Option
-        xml_data['call_option'],                    # 12. Call Option
-        xml_data['call_ratio'],                     # 13. Call 비율
-        xml_data['ytc'],                            # 14. YTC
-        str(row.get('bdis_mthn', '-')),             # 15. 모집방식
-        product_name,                               # 16. 발행상품
-        price_str,                                  # 17. 행사(전환)가액(원)
-        shares_str,                                 # 18. 전환주식수
-        str(row.get(f_map['ratio'], '-')),          # 19. 주식총수대비 비율
-        refix_str,                                  # 20. Refixing Floor
-        str(row.get('pymd', '-')),                  # 21. 납입일
-        purpose_str,                                # 22. 자금용도
-        xml_data['investor'],                       # 23. 투자자
-        link,                                       # 24. 링크
-        rcept_no                                    # 25. 접수번호
+        config['type'],                              # 1. 구분 (CB, BW, EB)
+        corp_name,                                   # 2. 회사명
+        report_nm,                                   # 3. 보고서명
+        cls_map.get(row.get('corp_cls', ''), '기타'), # 4. 상장시장
+        str(row.get('bddd', '-')),                   # 5. 최초 이사회결의일
+        face_value_str,                              # 6. 권면총액(원)
+        str(row.get('bd_intr_ex', '-')),             # 7. Coupon (표면이자율)
+        str(row.get('bd_intr_sf', '-')),             # 8. YTM (만기이자율)
+        str(row.get('bd_mtd', '-')),                 # 9. 만기
+        str(row.get(f_map['start'], '-')),           # 10. 전환청구 시작
+        str(row.get(f_map['end'], '-')),             # 11. 전환청구 종료
+        xml_data['put_option'],                      # 12. Put Option
+        xml_data['call_option'],                     # 13. Call Option
+        xml_data['call_ratio'],                      # 14. Call 비율
+        xml_data['ytc'],                             # 15. YTC
+        str(row.get('bdis_mthn', '-')),              # 16. 모집방식
+        product_name,                                # 17. 발행상품
+        price_str,                                   # 18. 행사(전환)가액(원)
+        shares_str,                                  # 19. 전환주식수
+        str(row.get(f_map['ratio'], '-')),           # 20. 주식총수대비 비율
+        refix_str,                                   # 21. Refixing Floor
+        str(row.get('pymd', '-')),                   # 22. 납입일
+        purpose_str,                                 # 23. 자금용도
+        xml_data['investor'],                        # 24. 투자자
+        link,                                        # 25. 링크
+        rcept_no                                     # 26. 접수번호
     ]
 
 
@@ -189,33 +196,85 @@ def get_and_update_bonds():
 
     # 채권 종류별 설정값 (API 필드명이 다르므로 매핑)
     bond_configs = [
-        {'type': 'CB', 'keyword': '전환사채권발행결정', 'endpoint': 'cvbdIsDecsn', 'fields': {'price': 'cv_prc', 'shares': 'cvisstk_cnt', 'ratio': 'cvisstk_tisstk_vs', 'start': 'cvrqpd_bgd', 'end': 'cvrqpd_edd', 'refix': 'act_mktprcfl_cvprc_lwtrsprc'}},
-        {'type': 'BW', 'keyword': '신주인수권부사채권발행결정', 'endpoint': 'bdwtIsDecsn', 'fields': {'price': 'ex_prc', 'shares': 'nstk_isstk_cnt', 'ratio': 'nstk_isstk_tisstk_vs', 'start': 'expd_bgd', 'end': 'expd_edd', 'refix': 'act_mktprcfl_cvprc_lwtrsprc'}},
-        {'type': 'EB', 'keyword': '교환사채권발행결정', 'endpoint': 'exbdIsDecsn', 'fields': {'price': 'ex_prc', 'shares': 'extg_stkcnt', 'ratio': 'extg_tisstk_vs', 'start': 'exrqpd_bgd', 'end': 'exrqpd_edd', 'refix': ''}}
+        {
+            'type': 'CB',
+            'keyword': '전환사채권발행결정',
+            'endpoint': 'cvbdIsDecsn',
+            'fields': {
+                'price': 'cv_prc',
+                'shares': 'cvisstk_cnt',
+                'ratio': 'cvisstk_tisstk_vs',
+                'start': 'cvrqpd_bgd',
+                'end': 'cvrqpd_edd',
+                'refix': 'act_mktprcfl_cvprc_lwtrsprc'
+            }
+        },
+        {
+            'type': 'BW',
+            'keyword': '신주인수권부사채권발행결정',
+            'endpoint': 'bdwtIsDecsn',
+            'fields': {
+                'price': 'ex_prc',
+                'shares': 'nstk_isstk_cnt',
+                'ratio': 'nstk_isstk_tisstk_vs',
+                'start': 'expd_bgd',
+                'end': 'expd_edd',
+                'refix': 'act_mktprcfl_cvprc_lwtrsprc'
+            }
+        },
+        {
+            'type': 'EB',
+            'keyword': '교환사채권발행결정',
+            'endpoint': 'exbdIsDecsn',
+            'fields': {
+                'price': 'ex_prc',
+                'shares': 'extg_stkcnt',
+                'ratio': 'extg_tisstk_vs',
+                'start': 'exrqpd_bgd',
+                'end': 'exrqpd_edd',
+                'refix': ''
+            }
+        }
     ]
 
     worksheet = sh.worksheet('주식연계채권')
     cls_map = {'Y': '유가', 'K': '코스닥', 'N': '코넥스', 'E': '기타'}
 
-    # 💡 [변경] 시트의 전체 데이터를 읽어와서 행 번호(Row Index)와 기존 값을 모두 매핑해둡니다. (Diff/Update 용도)
+    # 시트의 기존 데이터 읽기
     all_sheet_data = worksheet.get_all_values()
-    rcept_row_map = {row[24]: i + 1 for i, row in enumerate(all_sheet_data) if len(row) > 24}
+    rcept_row_map = {
+        row[RCEPT_NO_COL_IDX]: i + 1
+        for i, row in enumerate(all_sheet_data)
+        if len(row) > RCEPT_NO_COL_IDX
+    }
     existing_rcept_nos = list(rcept_row_map.keys())
 
     for config in bond_configs:
         print(f"\n[{config['type']}] 데이터 확인 중...")
-        df_filtered = all_filings[all_filings['report_nm'].str.contains(config['keyword'], na=False)]
+        df_filtered = all_filings[all_filings['report_nm'].str.contains(config['keyword'], na=False)].copy()
         
         if df_filtered.empty:
             print(f"ℹ️ {config['type']} 공시가 없습니다.")
             continue
+
+        # rcept_no / report_nm 매핑용
+        df_filtered['rcept_no'] = df_filtered['rcept_no'].astype(str)
+        df_report_map = df_filtered[['rcept_no', 'report_nm']].drop_duplicates(subset=['rcept_no'])
             
         corp_codes = df_filtered['corp_code'].unique()
         detail_dfs = []
         
         for code in corp_codes:
-            detail_params = {'crtfc_key': dart_key, 'corp_code': code, 'bgn_de': start_date, 'end_de': end_date}
-            df_detail = fetch_dart_json(f"https://opendart.fss.or.kr/api/{config['endpoint']}.json", detail_params)
+            detail_params = {
+                'crtfc_key': dart_key,
+                'corp_code': code,
+                'bgn_de': start_date,
+                'end_de': end_date
+            }
+            df_detail = fetch_dart_json(
+                f"https://opendart.fss.or.kr/api/{config['endpoint']}.json",
+                detail_params
+            )
             if not df_detail.empty:
                 detail_dfs.append(df_detail)
                 
@@ -223,12 +282,16 @@ def get_and_update_bonds():
             continue
             
         df_combined = pd.concat(detail_dfs, ignore_index=True)
+        df_combined['rcept_no'] = df_combined['rcept_no'].astype(str)
         
         target_rcept_nos = df_filtered['rcept_no'].unique()
-        df_merged = df_combined[df_combined['rcept_no'].isin(target_rcept_nos)]
+        df_merged = df_combined[df_combined['rcept_no'].isin(target_rcept_nos)].copy()
+
+        # 💡 [추가] report_nm 붙이기
+        df_merged = df_merged.merge(df_report_map, on='rcept_no', how='left')
         
         # ========================================================
-        # 🟢 1. 신규 데이터 추가 로직 (기존 유지)
+        # 🟢 1. 신규 데이터 추가 로직
         # ========================================================
         new_data_df = df_merged[~df_merged['rcept_no'].astype(str).isin(existing_rcept_nos)]
         
@@ -237,8 +300,6 @@ def get_and_update_bonds():
             rcept_no = str(row.get('rcept_no', ''))
             print(f" -> [신규] {row.get('corp_name', '')} 데이터 포매팅 중...")
             xml_data = extract_bond_xml_details(dart_key, rcept_no)
-            
-            # 함수로 분리한 포매팅 로직 호출
             new_row = make_row_data(row, xml_data, config, cls_map)
             data_to_add.append(new_row)
             
@@ -246,8 +307,18 @@ def get_and_update_bonds():
             worksheet.append_rows(data_to_add)
             print(f"✅ {config['type']}: 신규 데이터 {len(data_to_add)}건 추가 완료!")
 
+        # 신규 append 후 row map 갱신
+        if data_to_add:
+            all_sheet_data = worksheet.get_all_values()
+            rcept_row_map = {
+                row[RCEPT_NO_COL_IDX]: i + 1
+                for i, row in enumerate(all_sheet_data)
+                if len(row) > RCEPT_NO_COL_IDX
+            }
+            existing_rcept_nos = list(rcept_row_map.keys())
+
         # ========================================================
-        # 🔄 2. [신규 추가] 기존 데이터 재검사 및 덮어쓰기 로직 (Recheck + Diff + Update)
+        # 🔄 2. 기존 데이터 재검사 및 덮어쓰기 로직
         # ========================================================
         existing_data_df = df_merged[df_merged['rcept_no'].astype(str).isin(existing_rcept_nos)]
         update_count = 0
@@ -255,30 +326,30 @@ def get_and_update_bonds():
         for _, row in existing_data_df.iterrows():
             rcept_no = str(row.get('rcept_no', ''))
             row_idx = rcept_row_map.get(rcept_no)
-            if not row_idx: continue
+            if not row_idx:
+                continue
 
-            # 1. 구글 시트에 현재 저장되어 있는 기존 값
+            # 시트 현재 값
             sheet_row = all_sheet_data[row_idx - 1]
             
-            # 2. DART에서 가져온 최신 값으로 다시 25칸 구성
+            # 최신 값 재구성
             xml_data = extract_bond_xml_details(dart_key, rcept_no)
             new_row = make_row_data(row, xml_data, config, cls_map)
             
-            # 3. [Diff 검사] 빈 칸이 있을 수 있으니 길이 25로 맞추고 문자열로 변환하여 완전 동일한지 비교
-            sheet_row_padded = sheet_row + [''] * (25 - len(sheet_row))
+            # 길이 26으로 맞춘 뒤 비교
+            sheet_row_padded = sheet_row + [''] * (TOTAL_COLS - len(sheet_row))
             new_row_str = [str(x) for x in new_row]
 
-            # 두 데이터가 1개라도 다르면 (정정공시, 옵션 확정 등) 덮어쓰기!
             if sheet_row_padded != new_row_str:
                 corp_name = row.get('corp_name', '')
                 print(f" 🔄 [업데이트] {corp_name} 값이 변경/확정되었습니다. 시트를 덮어씁니다.")
-                # 변경된 최신 값으로 해당 줄(예: A15) 전체 덮어쓰기
                 worksheet.update(values=[new_row], range_name=f'A{row_idx}')
                 update_count += 1
-                time.sleep(1) # 구글 API 쓰기 할당량 초과 방지용 휴식
+                time.sleep(1)
 
         if update_count > 0:
             print(f"✅ {config['type']}: 기존 데이터 {update_count}건 자동 업데이트 완료!")
+
 
 if __name__ == "__main__":
     get_and_update_bonds()
