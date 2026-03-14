@@ -115,7 +115,7 @@ def to_int(val):
     except:
         return 0
 
-    def get_and_update_yusang():
+def get_and_update_yusang():
     start_date = '20260101'
     end_date = '20260131'
 
