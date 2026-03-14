@@ -172,7 +172,7 @@ def get_and_update_yusang():
         how='inner'
     )
     
-    worksheet = sh.worksheet('유상증자')
+    worksheet = sh.worksheet('D_유상증자')
     
     # 기존 시트 전체 읽기
     all_sheet_data = worksheet.get_all_values()
