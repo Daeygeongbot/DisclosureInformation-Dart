@@ -115,11 +115,11 @@ def to_int(val):
     except:
         return 0
 
-def get_and_update_yusang():
-    end_date = datetime.now().strftime('%Y%m%d')
-    start_date = (datetime.now() - timedelta(days=7)).strftime('%Y%m%d')
+    def get_and_update_yusang():
+    start_date = '20260101'
+    end_date = '20260131'
 
-    print("최근 7일 유상증자 공시 탐색 중 (데이터 최신화 검증 로직 포함)...")
+    print(f"{start_date} ~ {end_date} 유상증자 공시 탐색 중...")
     
     list_url = "https://opendart.fss.or.kr/api/list.json"
     list_params = {
@@ -130,12 +130,7 @@ def get_and_update_yusang():
         'pblntf_detail_ty': 'B001',
         'page_count': '100'
     }
-    all_filings = fetch_dart_json(list_url, list_params)
-
-    if all_filings.empty:
-        print("최근 7일간 주요사항보고서가 없습니다.")
-        return
-
+    
     df_filtered = all_filings[all_filings['report_nm'].str.contains('유상증자결정', na=False)].copy()
     if df_filtered.empty:
         print("ℹ️ 유상증자 공시가 없습니다.")
