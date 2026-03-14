@@ -28,7 +28,7 @@ OLD_RCEPT_IDX = 19   # 20번째 컬럼 (기존 구조 호환용)
 # --- [JSON 파싱] ---
 def fetch_dart_json(url, params):
     try:
-        res = requests.get(url, params=params)
+        res = requests.get(url, params=params, timeout=20)
         if res.status_code == 200:
             data = res.json()
             if data.get('status') == '000' and 'list' in data:
@@ -37,18 +37,60 @@ def fetch_dart_json(url, params):
         print(f"JSON API 에러: {e}")
     return pd.DataFrame()
 
+# --- [list.json 전체 페이지 수집] ---
+def fetch_dart_list_all(url, params):
+    frames = []
+    page_no = 1
+    total_page = 1
+
+    while page_no <= total_page:
+        page_params = params.copy()
+        page_params['page_no'] = page_no
+        page_params['page_count'] = '100'
+
+        try:
+            res = requests.get(url, params=page_params, timeout=20)
+            if res.status_code != 200:
+                print(f"list.json HTTP 에러: {res.status_code}")
+                break
+
+            data = res.json()
+
+            if data.get('status') == '013':
+                break
+
+            if data.get('status') != '000':
+                print(f"list.json API 에러: {data.get('status')} / {data.get('message')}")
+                break
+
+            total_page = int(data.get('total_page', 1))
+
+            if data.get('list'):
+                frames.append(pd.DataFrame(data['list']))
+
+            page_no += 1
+
+        except Exception as e:
+            print(f"list.json 페이지 수집 에러: {e}")
+            break
+
+    if frames:
+        return pd.concat(frames, ignore_index=True)
+
+    return pd.DataFrame()
+
 # --- [XML 원문 족집게 파싱 (정규식 초정밀 업그레이드)] ---
 def extract_xml_details(api_key, rcept_no):
     url = "https://opendart.fss.or.kr/api/document.xml"
     params = {'crtfc_key': api_key, 'rcept_no': rcept_no}
-    
+
     extracted = {
         'board_date': '-', 'issue_price': '-', 'base_price': '-', 'discount': '-',
         'pay_date': '-', 'div_date': '-', 'list_date': '-', 'investor': '원문참조'
     }
-    
+
     try:
-        res = requests.get(url, params=params, stream=True)
+        res = requests.get(url, params=params, stream=True, timeout=30)
         if res.status_code == 200:
             with zipfile.ZipFile(io.BytesIO(res.content)) as z:
                 xml_filename = [name for name in z.namelist() if name.endswith('.xml')][0]
@@ -56,7 +98,7 @@ def extract_xml_details(api_key, rcept_no):
                     xml_content = f.read().decode('utf-8')
                     soup = BeautifulSoup(xml_content, 'html.parser')
                     raw_text = soup.get_text(separator=' ', strip=True)
-                    
+
                     def fix_date(raw_date_str):
                         if not raw_date_str:
                             return '-'
@@ -64,46 +106,46 @@ def extract_xml_details(api_key, rcept_no):
                         if len(nums) >= 3:
                             return f"{nums[0]}년 {nums[1].zfill(2)}월 {nums[2].zfill(2)}일"
                         return raw_date_str + "일"
-                    
+
                     # 1. 확정발행가 추출
                     issue = re.search(r'발행가액[^\d]*([0-9]{1,3}(?:,[0-9]{3})*)', raw_text)
                     if issue:
                         extracted['issue_price'] = issue.group(1).strip()
-                    
+
                     # 2. 기준주가 추출
                     base = re.search(r'기준주가[^\d]*([0-9]{1,3}(?:,[0-9]{3})*)', raw_text)
                     if base:
                         extracted['base_price'] = base.group(1).strip()
-                    
+
                     # 3. 할인/할증률 추출
                     disc = re.search(r'할\s*[인증]\s*율[^\d\+\-]*([\-\+]?[0-9\.]+)', raw_text)
                     if disc:
                         extracted['discount'] = disc.group(1).strip() + "%"
-                    
+
                     # 4. 날짜 추출
                     board = re.search(r'이사회결의일[^\d]*(\d{4}[\-\.년\s]+\d{1,2}[\-\.월\s]+\d{1,2})', raw_text)
                     if board:
                         extracted['board_date'] = fix_date(board.group(1).strip())
-                    
+
                     pay = re.search(r'납\s*입\s*일[^\d]*(\d{4}[\-\.년\s]+\d{1,2}[\-\.월\s]+\d{1,2})', raw_text)
                     if pay:
                         extracted['pay_date'] = fix_date(pay.group(1).strip())
-                    
+
                     div = re.search(r'배당기산일[^\d]*(\d{4}[\-\.년\s]+\d{1,2}[\-\.월\s]+\d{1,2})', raw_text)
                     if div:
                         extracted['div_date'] = fix_date(div.group(1).strip())
-                    
+
                     list_d = re.search(r'상장\s*예정일[^\d]*(\d{4}[\-\.년\s]+\d{1,2}[\-\.월\s]+\d{1,2})', raw_text)
                     if list_d:
                         extracted['list_date'] = fix_date(list_d.group(1).strip())
-                    
+
                     # 5. 투자자
                     if "제3자배정" in raw_text:
                         extracted['investor'] = "제3자배정 (원문참조)"
 
     except Exception as e:
         print(f"문서 XML 에러 ({rcept_no}): {e}")
-        
+
     return extracted
 
 # 안전한 숫자 변환 함수
@@ -116,8 +158,8 @@ def to_int(val):
         return 0
 
 def get_and_update_yusang():
-    start_date = '20260101'
-    end_date = '20260111'
+    start_date = '20260105'
+    end_date = '20260106'
 
     print(f"{start_date} ~ {end_date} 유상증자 공시 탐색 중...")
 
@@ -127,10 +169,10 @@ def get_and_update_yusang():
         'bgn_de': start_date,
         'end_de': end_date,
         'pblntf_ty': 'B',
-        'pblntf_detail_ty': 'B001',
-        'page_count': '100'
+        'pblntf_detail_ty': 'B001'
     }
-    all_filings = fetch_dart_json(list_url, list_params)
+
+    all_filings = fetch_dart_list_all(list_url, list_params)
 
     if all_filings.empty:
         print("최근 지정 기간 내 주요사항보고서가 없습니다.")
@@ -143,25 +185,28 @@ def get_and_update_yusang():
     if df_filtered.empty:
         print("ℹ️ 유상증자 공시가 없습니다.")
         return
-        
-    corp_codes = df_filtered['corp_code'].unique()
+
+    corp_codes = df_filtered['corp_code'].astype(str).unique()
     detail_dfs = []
-    
+
+    # piicDecsn은 최초접수일 기준 이슈가 있을 수 있어 조회 시작일을 넉넉하게 확장
+    detail_start_date = (datetime.strptime(start_date, "%Y%m%d") - timedelta(days=180)).strftime("%Y%m%d")
+
     for code in corp_codes:
         detail_params = {
             'crtfc_key': dart_key,
             'corp_code': code,
-            'bgn_de': start_date,
+            'bgn_de': detail_start_date,
             'end_de': end_date
         }
         df_detail = fetch_dart_json('https://opendart.fss.or.kr/api/piicDecsn.json', detail_params)
         if not df_detail.empty:
             detail_dfs.append(df_detail)
-            
+
     if not detail_dfs:
         print("ℹ️ 상세 데이터를 불러올 수 없습니다.")
         return
-        
+
     df_combined = pd.concat(detail_dfs, ignore_index=True)
 
     # report_nm도 같이 병합
@@ -174,13 +219,13 @@ def get_and_update_yusang():
         on='rcept_no',
         how='inner'
     )
-    
+
     worksheet = sh.worksheet('D_유상증자')
-    
+
     # 기존 시트 전체 읽기
     all_sheet_data = worksheet.get_all_values()
     existing_data_dict = {}
-    
+
     # 기존 20컬럼 구조 / 신규 21컬럼 구조 둘 다 호환
     for idx, row_data in enumerate(all_sheet_data):
         rcept_val = ''
@@ -194,37 +239,37 @@ def get_and_update_yusang():
                 'row_idx': idx + 1,
                 'data': [str(x).strip() for x in row_data]
             }
-            
+
     data_to_add = []
     cls_map = {'Y': '유가', 'K': '코스닥', 'N': '코넥스', 'E': '기타'}
-    
+
     for _, row in df_merged.iterrows():
         rcept_no = str(row.get('rcept_no', ''))
         corp_name = row.get('corp_name', '')
         report_nm = row.get('report_nm', '')
-        
+
         xml_data = extract_xml_details(dart_key, rcept_no)
-        
+
         # 1. 상장시장
         market = cls_map.get(row.get('corp_cls', ''), '기타')
         method = row.get('ic_mthn', '')
-        
+
         # 2. 주식수
         ostk = to_int(row.get('nstk_ostk_cnt'))
         estk = to_int(row.get('nstk_estk_cnt'))
         new_shares = ostk + estk
         product = "보통주" if ostk > 0 else "기타주"
-        
+
         old_ostk = to_int(row.get('bfic_tisstk_ostk'))
         old_estk = to_int(row.get('bfic_tisstk_estk'))
         old_shares = old_ostk + old_estk
-        
+
         new_shares_str = f"{new_shares:,}"
         old_shares_str = f"{old_shares:,}"
-        
+
         # 3. 증자비율
         ratio = f"{(new_shares / old_shares * 100):.2f}%" if old_shares > 0 else "-"
-        
+
         # 4. 확정발행금액
         fclt = to_int(row.get('fdpp_fclt'))
         bsninh = to_int(row.get('fdpp_bsninh'))
@@ -232,22 +277,28 @@ def get_and_update_yusang():
         dtrp = to_int(row.get('fdpp_dtrp'))
         ocsa = to_int(row.get('fdpp_ocsa'))
         etc = to_int(row.get('fdpp_etc'))
-        
+
         total_amt = fclt + bsninh + op + dtrp + ocsa + etc
         total_amt_uk = f"{(total_amt / 100000000):,.2f}" if total_amt > 0 else "0.00"
-        
+
         # 자금용도 추출
         purposes = []
-        if fclt > 0: purposes.append("시설")
-        if bsninh > 0: purposes.append("영업양수")
-        if op > 0: purposes.append("운영")
-        if dtrp > 0: purposes.append("채무상환")
-        if ocsa > 0: purposes.append("타법인증권")
-        if etc > 0: purposes.append("기타")
+        if fclt > 0:
+            purposes.append("시설")
+        if bsninh > 0:
+            purposes.append("영업양수")
+        if op > 0:
+            purposes.append("운영")
+        if dtrp > 0:
+            purposes.append("채무상환")
+        if ocsa > 0:
+            purposes.append("타법인증권")
+        if etc > 0:
+            purposes.append("기타")
         purpose_str = ", ".join(purposes)
-        
+
         link = f"https://dart.fss.or.kr/dsaf001/main.do?rcpNo={rcept_no}"
-        
+
         # 회사명 다음에 보고서명 추가
         new_row = [
             corp_name,                  # 1 회사명
@@ -272,15 +323,15 @@ def get_and_update_yusang():
             link,                       # 20 링크
             rcept_no                    # 21 접수번호
         ]
-        
+
         new_row_str = [str(x).strip() for x in new_row]
-        
+
         if rcept_no in existing_data_dict:
             existing_row_str = existing_data_dict[rcept_no]['data']
-            
+
             existing_row_str += [''] * (len(new_row_str) - len(existing_row_str))
             existing_row_str = existing_row_str[:len(new_row_str)]
-            
+
             if new_row_str != existing_row_str:
                 row_idx = existing_data_dict[rcept_no]['row_idx']
                 try:
@@ -290,11 +341,11 @@ def get_and_update_yusang():
                 print(f" 🔄 {corp_name}: 데이터 변경 감지! 최신 내용으로 자동 덮어쓰기 완료 (행: {row_idx})")
             else:
                 print(f" ⏩ {corp_name}: 변경사항 없음 (패스)")
-                
+
         else:
             print(f" 🆕 {corp_name}: 신규 공시 발견! 추가 대기 중...")
             data_to_add.append(new_row)
-        
+
     if data_to_add:
         worksheet.append_rows(data_to_add)
         print(f"✅ 유상증자: 신규 데이터 {len(data_to_add)}건 일괄 추가 완료!")
