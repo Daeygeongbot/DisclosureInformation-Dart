@@ -703,4 +703,4 @@ def get_and_update_yusang(start_date, end_date):
 
 
 if __name__ == "__main__":
-    get_and_update_yusang('20260101', '20260131')
+    get_and_update_yusang('20260201', '20260228')
