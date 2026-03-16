@@ -146,6 +146,15 @@ def to_int(val):
     except:
         return 0
 
+# 날짜 포맷 변환 함수 (YYYY-MM-DD)
+def fix_date(raw_date_str):
+    if not raw_date_str:
+        return '-'
+    nums = re.findall(r'\d+', str(raw_date_str))
+    if len(nums) >= 3:
+        return f"{nums[0]}-{nums[1].zfill(2)}-{nums[2].zfill(2)}"
+    return '-'
+
 
 # 💡 [수정] 보고서명 컬럼 추가
 def make_row_data(row, xml_data, config, cls_map):
@@ -193,13 +202,13 @@ def make_row_data(row, xml_data, config, cls_map):
         corp_name,                                    # 2. 회사명
         report_nm,                                    # 3. 보고서명
         cls_map.get(row.get('corp_cls', ''), '기타'), # 4. 상장시장
-        str(row.get('bddd', '-')),                    # 5. 최초 이사회결의일
+        fix_date(row.get('bddd', '-')),               # 5. 최초 이사회결의일
         face_value_str,                               # 6. 권면총액(원)
         str(row.get('bd_intr_ex', '-')),              # 7. Coupon (표면이자율)
         str(row.get('bd_intr_sf', '-')),              # 8. YTM (만기이자율)
-        str(row.get('bd_mtd', '-')),                  # 9. 만기
-        str(row.get(f_map['start'], '-')),            # 10. 전환청구 시작
-        str(row.get(f_map['end'], '-')),              # 11. 전환청구 종료
+        fix_date(row.get('bd_mtd', '-')),             # 9. 만기
+        fix_date(row.get(f_map['start'], '-')),       # 10. 전환청구 시작
+        fix_date(row.get(f_map['end'], '-')),         # 11. 전환청구 종료
         xml_data['put_option'],                       # 12. Put Option
         xml_data['call_option'],                      # 13. Call Option
         xml_data['call_ratio'],                       # 14. Call 비율
@@ -210,7 +219,7 @@ def make_row_data(row, xml_data, config, cls_map):
         shares_str,                                   # 19. 전환주식수
         str(row.get(f_map['ratio'], '-')),            # 20. 주식총수대비 비율
         refix_str,                                    # 21. Refixing Floor
-        str(row.get('pymd', '-')),                    # 22. 납입일
+        fix_date(row.get('pymd', '-')),               # 22. 납입일
         purpose_str,                                  # 23. 자금용도
         xml_data['investor'],                         # 24. 투자자
         link,                                         # 25. 링크
