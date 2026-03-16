@@ -298,45 +298,25 @@ def extract_base_price_from_text(text, expected=None):
 
     candidates = []
 
-    # 1) 가장 우선: "기준주가 12,345원" 형태만 먼저 찾음
     for label in labels:
-        pattern1 = rf'{re.escape(label)}\s*[:：]?\s*(\d{{1,3}}(?:,\d{{3}})+|\d+)\s*원'
-        for m in re.finditer(pattern1, text):
-            val = to_int(m.group(1))
-            if 100 <= val <= 50000000:
-                candidates.append(val)
+        for m in re.finditer(re.escape(label), text):
+            # 기준주가 "뒤쪽"만 본다
+            snippet = text[m.end(): m.end() + 60]
 
-    # 2) 보조: "기준주가 12345" 형태 허용
-    # 단, 바로 뒤가 %, 년, 월, 일, 차, 회, 번 이면 제외
-    if not candidates:
-        for label in labels:
-            pattern2 = rf'{re.escape(label)}\s*[:：]?\s*(\d{{1,3}}(?:,\d{{3}})+|\d+)'
-            for m in re.finditer(pattern2, text):
-                val_str = m.group(1)
-                tail = text[m.end():m.end() + 3]
+            # 앞의 구분자/공백 제거
+            snippet = re.sub(r'^[\s:：\-=·•\)\]\}]*', '', snippet)
 
-                if any(tail.startswith(x) for x in ['%', '년', '월', '일', '차', '회', '번']):
-                    continue
-
-                val = to_int(val_str)
+            # 1) "12,345원" 형태 우선
+            for m2 in re.finditer(r'(?<!\d)(\d{1,3}(?:,\d{3})+|\d+)\s*원', snippet):
+                val = to_int(m2.group(1))
                 if 100 <= val <= 50000000:
                     candidates.append(val)
 
-    # 3) 마지막 fallback:
-    # "기준주가" 바로 뒤의 아주 짧은 구간(최대 20자)만 확인
-    # -> "7. 기준주가", "25. 청약..." 같은 항목 번호 오탐 방지
-    if not candidates:
-        for label in labels:
-            for m in re.finditer(re.escape(label), text):
-                snippet = text[m.end(): m.end() + 20]
-                snippet = re.sub(r'^[\s:：\-=·•\)\]\}]*', '', snippet)
-
-                m2 = re.match(r'(\d{1,3}(?:,\d{3})+|\d+)', snippet)
-                if not m2:
-                    continue
-
-                val_str = m2.group(1)
-                tail = snippet[m2.end():m2.end() + 3]
+            # 2) 숫자만 있는 경우도 허용
+            # 단, 날짜/퍼센트/회차/항목번호성 숫자는 제외
+            for m3 in re.finditer(r'(?<!\d)(\d{1,3}(?:,\d{3})+|\d+)(?!\d)', snippet):
+                val_str = m3.group(1)
+                tail = snippet[m3.end():m3.end() + 5]
 
                 if any(tail.startswith(x) for x in ['%', '년', '월', '일', '차', '회', '번']):
                     continue
@@ -346,7 +326,16 @@ def extract_base_price_from_text(text, expected=None):
                     candidates.append(val)
 
     candidates = unique_keep_order(candidates)
-    return pick_best_price_candidate(candidates, expected=expected, min_value=100, max_value=50000000)
+
+    if not candidates:
+        return None
+
+    return pick_best_price_candidate(
+        candidates,
+        expected=expected,
+        min_value=100,
+        max_value=50000000
+    )
 
 
 def extract_investor_from_text(text):
@@ -531,6 +520,7 @@ def build_rcept_row_map(all_sheet_data):
             rcept_row_map[rcept_val] = idx + 1
 
     return rcept_row_map
+
 
 # =========================================================
 # 메인
