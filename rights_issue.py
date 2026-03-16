@@ -245,7 +245,10 @@ def extract_discount_rate(text):
     return candidates[0] if candidates else None
 
 
-def extract_number_candidates_near_labels(text, labels, window=120):
+# =========================================================
+# 가격 추출 공통 로직
+# =========================================================
+def extract_number_candidates_near_labels(text, labels, window=80):
     if not text:
         return []
 
@@ -253,12 +256,62 @@ def extract_number_candidates_near_labels(text, labels, window=120):
 
     for label in labels:
         for m in re.finditer(re.escape(label), text):
+            # 라벨 "뒤쪽"만 확인
             snippet = text[m.end(): m.end() + window]
-            nums = re.findall(r'(?<!\d)(\d{1,3}(?:,\d{3})+|\d+)(?!\d)', snippet)
-            for num in nums:
-                val = to_int(num)
-                if val > 0:
-                    candidates.append(val)
+
+            # 맨 앞 구분자/공백 제거
+            snippet = re.sub(r'^[\s:：=\-~·•\)\]\}\(]*', '', snippet)
+
+            local_candidates = []
+
+            # -------------------------------------------------
+            # 1) 숫자 + 원 패턴 우선
+            # -------------------------------------------------
+            for m2 in re.finditer(r'(?<!\d)(\d{1,3}(?:,\d{3})+|\d+)\s*원', snippet):
+                val = to_int(m2.group(1))
+                if 100 < val <= 50000000:
+                    local_candidates.append(val)
+
+            # -------------------------------------------------
+            # 2) 보조: 숫자만 있는 경우
+            # 너무 멀리 보지 말고 앞 30자 내만 확인
+            # -------------------------------------------------
+            if not local_candidates:
+                short_snippet = snippet[:30]
+
+                for m3 in re.finditer(r'(?<!\d)(\d{1,3}(?:,\d{3})+|\d+)(?!\d)', short_snippet):
+                    val_str = m3.group(1)
+                    start_idx = m3.start()
+                    end_idx = m3.end()
+
+                    prefix = short_snippet[max(0, start_idx - 2):start_idx]
+                    tail = short_snippet[end_idx:end_idx + 6]
+
+                    # 1. 7. 25. 100. 같은 항목번호성 숫자 차단
+                    if tail.startswith('.'):
+                        continue
+
+                    # 바로 앞이 "(" 이면 조항/회차/번호 잡음 가능성 커서 제외
+                    if prefix.endswith('('):
+                        continue
+
+                    # 날짜/퍼센트/회차/번호류 제외
+                    if any(tail.startswith(x) for x in ['%', '년', '월', '일', '차', '회', '번', '호']):
+                        continue
+
+                    val = to_int(val_str)
+
+                    # 너무 작은 숫자 제외
+                    if val <= 100:
+                        continue
+
+                    # 지나치게 작은 정수는 항목번호 오탐 가능성이 큼
+                    # 다만 실제 저가주도 있을 수 있어 101 이상은 허용
+                    if 100 < val <= 50000000:
+                        local_candidates.append(val)
+
+            if local_candidates:
+                candidates.extend(local_candidates)
 
     return unique_keep_order(candidates)
 
@@ -276,14 +329,28 @@ def pick_best_price_candidate(candidates, expected=None, min_value=1, max_value=
 
 
 def extract_issue_price_from_text(text, expected=None):
+    if not text:
+        return None
+
     labels = [
         '확정 발행가액',
         '확정발행가액',
         '1주당 발행가액',
+        '1주당발행가액',
         '발행가액'
     ]
-    candidates = extract_number_candidates_near_labels(text, labels, window=100)
-    return pick_best_price_candidate(candidates, expected=expected, min_value=1, max_value=50000000)
+
+    candidates = extract_number_candidates_near_labels(text, labels, window=60)
+
+    if not candidates:
+        return None
+
+    return pick_best_price_candidate(
+        candidates,
+        expected=expected,
+        min_value=101,
+        max_value=50000000
+    )
 
 
 def extract_base_price_from_text(text, expected=None):
@@ -296,36 +363,7 @@ def extract_base_price_from_text(text, expected=None):
         '기준주가'
     ]
 
-    candidates = []
-
-    for label in labels:
-        for m in re.finditer(re.escape(label), text):
-            # 기준주가 "뒤쪽"만 본다
-            snippet = text[m.end(): m.end() + 60]
-
-            # 앞의 구분자/공백 제거
-            snippet = re.sub(r'^[\s:：\-=·•\)\]\}]*', '', snippet)
-
-            # 1) "12,345원" 형태 우선
-            for m2 in re.finditer(r'(?<!\d)(\d{1,3}(?:,\d{3})+|\d+)\s*원', snippet):
-                val = to_int(m2.group(1))
-                if 100 <= val <= 50000000:
-                    candidates.append(val)
-
-            # 2) 숫자만 있는 경우도 허용
-            # 단, 날짜/퍼센트/회차/항목번호성 숫자는 제외
-            for m3 in re.finditer(r'(?<!\d)(\d{1,3}(?:,\d{3})+|\d+)(?!\d)', snippet):
-                val_str = m3.group(1)
-                tail = snippet[m3.end():m3.end() + 5]
-
-                if any(tail.startswith(x) for x in ['%', '년', '월', '일', '차', '회', '번']):
-                    continue
-
-                val = to_int(val_str)
-                if 100 <= val <= 50000000:
-                    candidates.append(val)
-
-    candidates = unique_keep_order(candidates)
+    candidates = extract_number_candidates_near_labels(text, labels, window=60)
 
     if not candidates:
         return None
@@ -333,7 +371,7 @@ def extract_base_price_from_text(text, expected=None):
     return pick_best_price_candidate(
         candidates,
         expected=expected,
-        min_value=100,
+        min_value=101,
         max_value=50000000
     )
 
@@ -431,7 +469,10 @@ def make_row_data(row, xml_data, cls_map):
     if total_amt > 0 and new_shares > 0:
         issue_price_math = int(round(total_amt / new_shares))
 
-    issue_price_xml = extract_issue_price_from_text(xml_data['clean_text'], expected=issue_price_math)
+    issue_price_xml = extract_issue_price_from_text(
+        xml_data['clean_text'],
+        expected=issue_price_math
+    )
     issue_price_int = issue_price_math if issue_price_math and issue_price_math > 0 else issue_price_xml
 
     # 할인율
@@ -442,7 +483,10 @@ def make_row_data(row, xml_data, cls_map):
     if issue_price_int and discount_val is not None and (1 + discount_val / 100) != 0:
         expected_base = issue_price_int / (1 + discount_val / 100)
 
-    base_price_xml = extract_base_price_from_text(xml_data['clean_text'], expected=expected_base)
+    base_price_xml = extract_base_price_from_text(
+        xml_data['clean_text'],
+        expected=expected_base
+    )
 
     base_price_int = None
     if base_price_xml and base_price_xml > 0:
@@ -506,7 +550,6 @@ def build_rcept_row_map(all_sheet_data):
     rcept_row_map = {}
 
     for idx, row in enumerate(all_sheet_data):
-        # 보통 1행은 헤더이므로 skip
         if idx == 0:
             continue
 
