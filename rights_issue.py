@@ -287,13 +287,66 @@ def extract_issue_price_from_text(text, expected=None):
 
 
 def extract_base_price_from_text(text, expected=None):
+    if not text:
+        return None
+
     labels = [
         '산정 기준주가',
         '산정기준주가',
         '기준주가'
     ]
-    candidates = extract_number_candidates_near_labels(text, labels, window=100)
-    return pick_best_price_candidate(candidates, expected=expected, min_value=1, max_value=50000000)
+
+    candidates = []
+
+    # 1) 가장 우선: "기준주가 12,345원" 형태만 먼저 찾음
+    for label in labels:
+        pattern1 = rf'{re.escape(label)}\s*[:：]?\s*(\d{{1,3}}(?:,\d{{3}})+|\d+)\s*원'
+        for m in re.finditer(pattern1, text):
+            val = to_int(m.group(1))
+            if 100 <= val <= 50000000:
+                candidates.append(val)
+
+    # 2) 보조: "기준주가 12345" 형태 허용
+    # 단, 바로 뒤가 %, 년, 월, 일, 차, 회, 번 이면 제외
+    if not candidates:
+        for label in labels:
+            pattern2 = rf'{re.escape(label)}\s*[:：]?\s*(\d{{1,3}}(?:,\d{{3}})+|\d+)'
+            for m in re.finditer(pattern2, text):
+                val_str = m.group(1)
+                tail = text[m.end():m.end() + 3]
+
+                if any(tail.startswith(x) for x in ['%', '년', '월', '일', '차', '회', '번']):
+                    continue
+
+                val = to_int(val_str)
+                if 100 <= val <= 50000000:
+                    candidates.append(val)
+
+    # 3) 마지막 fallback:
+    # "기준주가" 바로 뒤의 아주 짧은 구간(최대 20자)만 확인
+    # -> "7. 기준주가", "25. 청약..." 같은 항목 번호 오탐 방지
+    if not candidates:
+        for label in labels:
+            for m in re.finditer(re.escape(label), text):
+                snippet = text[m.end(): m.end() + 20]
+                snippet = re.sub(r'^[\s:：\-=·•\)\]\}]*', '', snippet)
+
+                m2 = re.match(r'(\d{1,3}(?:,\d{3})+|\d+)', snippet)
+                if not m2:
+                    continue
+
+                val_str = m2.group(1)
+                tail = snippet[m2.end():m2.end() + 3]
+
+                if any(tail.startswith(x) for x in ['%', '년', '월', '일', '차', '회', '번']):
+                    continue
+
+                val = to_int(val_str)
+                if 100 <= val <= 50000000:
+                    candidates.append(val)
+
+    candidates = unique_keep_order(candidates)
+    return pick_best_price_candidate(candidates, expected=expected, min_value=100, max_value=50000000)
 
 
 def extract_investor_from_text(text):
