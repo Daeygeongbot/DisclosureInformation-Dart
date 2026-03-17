@@ -228,8 +228,10 @@ def make_row_data(row, xml_data, config, cls_map):
 
 
 def get_and_update_bonds():
-    start_date = '20260301'
-    end_date = '20260313'
+    end_date = datetime.now().strftime('%Y%m%d')
+    start_date = (datetime.now() - timedelta(days=7)).strftime('%Y%m%d')
+
+    print("최근 7일 주식연계채권(CB, BW, EB) 공시 탐색 중...")
 
     print(f"{start_date} ~ {end_date} 주식연계채권(CB, BW, EB) 공시 탐색 중...")
 
