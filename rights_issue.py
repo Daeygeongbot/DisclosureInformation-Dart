@@ -568,8 +568,11 @@ def build_rcept_row_map(all_sheet_data):
 # =========================================================
 # 메인
 # =========================================================
-def get_and_update_yusang(start_date, end_date):
-    print(f"{start_date} ~ {end_date} 유상증자 공시 탐색 중...")
+def get_and_update_yusang():
+    end_date = datetime.now().strftime('%Y%m%d')
+    start_date = (datetime.now() - timedelta(days=7)).strftime('%Y%m%d')
+
+    print("최근 7일 유상증자 공시 탐색 중 (데이터 최신화 검증 로직 포함)...")
 
     # 1) list.json 전체 조회
     list_url = "https://opendart.fss.or.kr/api/list.json"
@@ -703,4 +706,4 @@ def get_and_update_yusang(start_date, end_date):
 
 
 if __name__ == "__main__":
-    get_and_update_yusang('20260301', '20260317')
+    get_and_update_yusang()
