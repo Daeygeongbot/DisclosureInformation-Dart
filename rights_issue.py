@@ -612,8 +612,6 @@ def get_and_update_yusang():
             'corp_code': code,
             'bgn_de': detail_start_date,
             'end_de': end_date
-            'pblntf_ty': 'B',
-            'pblntf_detail_ty': 'B001'
         }
         df_detail = fetch_dart_json(
             'https://opendart.fss.or.kr/api/piicDecsn.json',
