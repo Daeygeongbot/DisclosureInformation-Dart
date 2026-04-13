@@ -843,7 +843,7 @@ def get_and_update_rights_bonus():
             data_to_add.append(new_row)
 
     if data_to_add:
-        worksheet.append_rows(data_to_add, value_input_option="USER_ENTERED")
+        worksheet.insert_rows(data_to_add, row=2, value_input_option="USER_ENTERED")
         print(f"✅ 유상/무상/유무상: 신규 데이터 {len(data_to_add)}건 추가 완료!")
 
         all_sheet_data = worksheet.get_all_values()
@@ -882,10 +882,8 @@ def get_and_update_rights_bonus():
             corp_name = row.get("corp_name", "")
             report_kind = row.get("report_kind", "")
             print(f" 🔄 [업데이트][{report_kind}] {corp_name} 값이 변경/확정되었습니다. 시트를 덮어씁니다.")
-            worksheet.update(
-                range_name=f"A{row_idx}:{end_col}{row_idx}",
-                values=[new_row],
-            )
+            worksheet.delete_rows(row_idx)
+            worksheet.insert_rows([new_row], row=2, value_input_option="USER_ENTERED")
             update_count += 1
             time.sleep(1)
 
