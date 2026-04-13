@@ -882,8 +882,10 @@ def get_and_update_rights_bonus():
             corp_name = row.get("corp_name", "")
             report_kind = row.get("report_kind", "")
             print(f" 🔄 [업데이트][{report_kind}] {corp_name} 값이 변경/확정되었습니다. 시트를 덮어씁니다.")
-            worksheet.delete_rows(row_idx)
-            worksheet.insert_rows([new_row], row=2, value_input_option="USER_ENTERED")
+            worksheet.update(
+                range_name=f"A{row_idx}:{end_col}{row_idx}",
+                values=[new_row],
+            )
             update_count += 1
             time.sleep(1)
 
