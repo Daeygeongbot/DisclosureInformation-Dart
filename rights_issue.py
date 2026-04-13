@@ -23,8 +23,7 @@ RIGHTS_SHEET_NAME = os.getenv("RIGHTS_SHEET_NAME", "D_유상증자")
 LOOKBACK_DAYS = int(os.getenv("LOOKBACK_DAYS", "7"))
 DETAIL_LOOKBACK_DAYS = int(os.getenv("DETAIL_LOOKBACK_DAYS", "180"))
 
-# 시트 구조
-# 구분 컬럼 추가 버전 (총 22컬럼)
+# 시트 구조 (컬럼 변경 없음)
 TOTAL_COLS = 22
 NEW_RCEPT_IDX = 21   # 22번째 컬럼 (0-based)
 OLD_RCEPT_IDX = 20   # 구버전 21컬럼 호환용
@@ -165,6 +164,40 @@ def detect_report_kind(report_nm):
     if "유상증자결정" in t:
         return "유"
     return None
+
+
+def pad_row(row, total_cols=TOTAL_COLS):
+    row = list(row or [])
+    if len(row) < total_cols:
+        row = row + [""] * (total_cols - len(row))
+    return [str(x).strip() for x in row[:total_cols]]
+
+
+def get_row_kind_from_sheet_row(row):
+    if not row:
+        return ""
+    row = list(row)
+    if len(row) >= 22:
+        return str(row[0]).strip()
+    return ""
+
+
+def get_row_rcept_from_sheet_row(row):
+    if not row:
+        return ""
+    row = list(row)
+
+    if len(row) > NEW_RCEPT_IDX and str(row[NEW_RCEPT_IDX]).strip():
+        return str(row[NEW_RCEPT_IDX]).strip()
+
+    if len(row) > OLD_RCEPT_IDX and str(row[OLD_RCEPT_IDX]).strip():
+        return str(row[OLD_RCEPT_IDX]).strip()
+
+    return ""
+
+
+def make_sheet_key(kind, rcept_no):
+    return (str(kind).strip(), str(rcept_no).strip())
 
 
 # =========================================================
@@ -323,7 +356,7 @@ def extract_number_candidates_near_labels(text, labels, window=80):
 
     for label in labels:
         for m in re.finditer(re.escape(label), text):
-            snippet = text[m.end() : m.end() + window]
+            snippet = text[m.end(): m.end() + window]
             snippet = re.sub(r"^[\s:：=\-~·•\)\]\}\(]*", "", snippet)
 
             local_candidates = []
@@ -341,8 +374,8 @@ def extract_number_candidates_near_labels(text, labels, window=80):
                     start_idx = m3.start()
                     end_idx = m3.end()
 
-                    prefix = short_snippet[max(0, start_idx - 2) : start_idx]
-                    tail = short_snippet[end_idx : end_idx + 6]
+                    prefix = short_snippet[max(0, start_idx - 2): start_idx]
+                    tail = short_snippet[end_idx: end_idx + 6]
 
                     if tail.startswith("."):
                         continue
@@ -669,51 +702,81 @@ def make_bonus_row(row, xml_data, cls_map, report_kind="무", output_kind="무")
     ]
 
 
-def make_rights_bonus_row(row, xml_data, cls_map):
+def make_rights_bonus_rows(row, xml_data, cls_map):
+    """
+    반환값:
+    - 유상증자결정: [유 row]
+    - 무상증자결정: [무 row]
+    - 유무상증자결정: [유 row, 무 row]
+    """
     report_kind = row.get("report_kind")
 
     if report_kind == "유":
-        return make_rights_row(row, xml_data, cls_map, report_kind="유", output_kind="유")
+        return [
+            make_rights_row(
+                row,
+                xml_data,
+                cls_map,
+                report_kind="유",
+                output_kind="유",
+            )
+        ]
 
     if report_kind == "무":
-        return make_bonus_row(row, xml_data, cls_map, report_kind="무", output_kind="무")
+        return [
+            make_bonus_row(
+                row,
+                xml_data,
+                cls_map,
+                report_kind="무",
+                output_kind="무",
+            )
+        ]
 
     if report_kind == "유무":
-        rights_row = make_rights_row(row, xml_data, cls_map, report_kind="유무", output_kind="유무")
-        bonus_row = make_bonus_row(row, xml_data, cls_map, report_kind="유무", output_kind="유무")
+        rights_row = make_rights_row(
+            row,
+            xml_data,
+            cls_map,
+            report_kind="유무",
+            output_kind="유",
+        )
+        bonus_row = make_bonus_row(
+            row,
+            xml_data,
+            cls_map,
+            report_kind="유무",
+            output_kind="무",
+        )
+        return [rights_row, bonus_row]
 
-        merged = []
-        for idx in range(TOTAL_COLS):
-            if idx == 0:
-                merged.append("유무")
-            else:
-                merged.append(first_nonempty(rights_row[idx], bonus_row[idx]))
-        return merged
-
-    return None
+    return []
 
 
 # =========================================================
-# 시트 기존 접수번호 맵
+# 시트 기존 row 맵
+# - 컬럼은 그대로 두고, 내부적으로만 (구분 + 접수번호) 기준 사용
 # =========================================================
-def build_rcept_row_map(all_sheet_data):
-    rcept_row_map = {}
+def build_sheet_maps(all_sheet_data):
+    key_row_map = {}
+    row_value_map = {}
 
     for idx, row in enumerate(all_sheet_data):
         if idx == 0:
             continue
 
-        rcept_val = ""
+        row_idx = idx + 1
+        kind = get_row_kind_from_sheet_row(row)
+        rcept_no = get_row_rcept_from_sheet_row(row)
 
-        if len(row) > NEW_RCEPT_IDX and str(row[NEW_RCEPT_IDX]).strip():
-            rcept_val = str(row[NEW_RCEPT_IDX]).strip()
-        elif len(row) > OLD_RCEPT_IDX and str(row[OLD_RCEPT_IDX]).strip():
-            rcept_val = str(row[OLD_RCEPT_IDX]).strip()
+        if not kind or not rcept_no:
+            continue
 
-        if rcept_val:
-            rcept_row_map[rcept_val] = idx + 1
+        key = make_sheet_key(kind, rcept_no)
+        key_row_map[key] = row_idx
+        row_value_map[key] = pad_row(row)
 
-    return rcept_row_map
+    return key_row_map, row_value_map
 
 
 # =========================================================
@@ -763,13 +826,43 @@ def fetch_rights_bonus_detail_df(df_filtered, start_date, end_date):
 
 
 # =========================================================
+# legacy 유무 row 삭제
+# - 기존에 구분=유무 로 저장된 최근 유무상 row는 삭제 후
+#   구분=유 / 구분=무 로 다시 저장
+# =========================================================
+def cleanup_legacy_merged_um_rows(worksheet, df_merged):
+    all_sheet_data = worksheet.get_all_values()
+    key_row_map, _ = build_sheet_maps(all_sheet_data)
+
+    target_rcepts = set(
+        df_merged[df_merged["report_kind"] == "유무"]["rcept_no"].astype(str).tolist()
+    )
+
+    delete_row_idxs = []
+    for rcept_no in target_rcepts:
+        legacy_key = make_sheet_key("유무", rcept_no)
+        if legacy_key in key_row_map:
+            delete_row_idxs.append(key_row_map[legacy_key])
+
+    if not delete_row_idxs:
+        return False
+
+    for row_idx in sorted(set(delete_row_idxs), reverse=True):
+        print(f" 🧹 legacy 유무 병합 row 삭제: row={row_idx}")
+        worksheet.delete_rows(row_idx)
+        time.sleep(0.5)
+
+    return True
+
+
+# =========================================================
 # 메인
 # =========================================================
 def get_and_update_rights_bonus():
     end_date = datetime.now().strftime("%Y%m%d")
     start_date = (datetime.now() - timedelta(days=LOOKBACK_DAYS)).strftime("%Y%m%d")
 
-    print("최근 공시 탐색 중 (유상/무상/유무상 통합 + 데이터 최신화 검증 포함)...")
+    print("최근 공시 탐색 중 (유상/무상/유무상 통합 + 유무상 2줄 저장 버전)...")
 
     # 1) list.json 전체 조회
     list_url = "https://opendart.fss.or.kr/api/list.json"
@@ -817,82 +910,87 @@ def get_and_update_rights_bonus():
 
     worksheet = sh.worksheet(RIGHTS_SHEET_NAME)
 
-    # 기존 시트 데이터
+    # =====================================================
+    # legacy 유무 병합 row 정리
+    # =====================================================
+    deleted_legacy = cleanup_legacy_merged_um_rows(worksheet, df_merged)
+    if deleted_legacy:
+        print("✅ 기존 legacy 유무 병합 row 삭제 완료")
+
+    # 현재 시트 데이터 재로드
     all_sheet_data = worksheet.get_all_values()
-    rcept_row_map = build_rcept_row_map(all_sheet_data)
-    existing_rcept_nos = list(rcept_row_map.keys())
+    key_row_map, row_value_map = build_sheet_maps(all_sheet_data)
+
+    rows_to_update = []
+    rows_to_insert = []
+
+    end_col = col_to_a1(TOTAL_COLS)
 
     # =====================================================
-    # 신규 데이터 추가
+    # 전체 대상에 대해 expected rows 생성
+    # - 유상: 1줄
+    # - 무상: 1줄
+    # - 유무상: 2줄
     # =====================================================
-    new_data_df = df_merged[~df_merged["rcept_no"].astype(str).isin(existing_rcept_nos)].copy()
-    data_to_add = []
-
-    for _, row in new_data_df.iterrows():
+    for _, row in df_merged.iterrows():
         rcept_no = str(row.get("rcept_no", ""))
         corp_name = row.get("corp_name", "")
         report_kind = row.get("report_kind", "")
         report_nm = row.get("report_nm", "")
 
-        print(f" -> [신규][{report_kind}] {corp_name} / {report_nm} 데이터 포매팅 중...")
+        print(f" -> [{report_kind}] {corp_name} / {report_nm} 데이터 포매팅 중...")
 
         xml_data = extract_xml_details(dart_key, rcept_no)
-        new_row = make_rights_bonus_row(row, xml_data, CLS_MAP)
+        expected_rows = make_rights_bonus_rows(row, xml_data, CLS_MAP)
 
-        if new_row:
-            data_to_add.append(new_row)
+        for expected_row in expected_rows:
+            expected_row_padded = pad_row(expected_row)
+            kind = expected_row_padded[0]
+            key = make_sheet_key(kind, rcept_no)
 
-    if data_to_add:
-        worksheet.insert_rows(data_to_add, row=2, value_input_option="USER_ENTERED")
-        print(f"✅ 유상/무상/유무상: 신규 데이터 {len(data_to_add)}건 추가 완료!")
+            existing_row_idx = key_row_map.get(key)
+            existing_row_val = row_value_map.get(key)
 
-        all_sheet_data = worksheet.get_all_values()
-        rcept_row_map = build_rcept_row_map(all_sheet_data)
-        existing_rcept_nos = list(rcept_row_map.keys())
+            if existing_row_idx is None:
+                rows_to_insert.append(expected_row)
+            else:
+                if existing_row_val != expected_row_padded:
+                    rows_to_update.append((existing_row_idx, expected_row, report_kind, corp_name, kind))
 
     # =====================================================
-    # 기존 데이터 재검사 및 덮어쓰기
+    # 기존 데이터 업데이트 먼저
+    # - insert 전에 update 해야 row index 안 밀림
     # =====================================================
-    existing_data_df = df_merged[df_merged["rcept_no"].astype(str).isin(existing_rcept_nos)].copy()
     update_count = 0
 
-    end_col = col_to_a1(TOTAL_COLS)
+    for row_idx, new_row, report_kind, corp_name, kind in sorted(rows_to_update, key=lambda x: x[0]):
+        print(f" 🔄 [업데이트][{report_kind}→{kind}] {corp_name} row={row_idx}")
+        worksheet.update(
+            range_name=f"A{row_idx}:{end_col}{row_idx}",
+            values=[new_row],
+        )
+        update_count += 1
+        time.sleep(1)
 
-    for _, row in existing_data_df.iterrows():
-        rcept_no = str(row.get("rcept_no", ""))
-        row_idx = rcept_row_map.get(rcept_no)
-        if not row_idx:
-            continue
+    # =====================================================
+    # 신규 row 추가
+    # - 유무상은 유 row / 무 row 각각 insert
+    # =====================================================
+    insert_count = 0
 
-        if row_idx - 1 >= len(all_sheet_data):
-            continue
+    if rows_to_insert:
+        worksheet.insert_rows(rows_to_insert, row=2, value_input_option="USER_ENTERED")
+        insert_count = len(rows_to_insert)
+        print(f"✅ 신규 row {insert_count}건 추가 완료!")
 
-        sheet_row = all_sheet_data[row_idx - 1]
-        sheet_row_padded = sheet_row + [""] * (TOTAL_COLS - len(sheet_row))
-        sheet_row_padded = [str(x).strip() for x in sheet_row_padded[:TOTAL_COLS]]
-
-        xml_data = extract_xml_details(dart_key, rcept_no)
-        new_row = make_rights_bonus_row(row, xml_data, CLS_MAP)
-        if not new_row:
-            continue
-
-        new_row_str = [str(x).strip() for x in new_row]
-
-        if sheet_row_padded != new_row_str:
-            corp_name = row.get("corp_name", "")
-            report_kind = row.get("report_kind", "")
-            print(f" 🔄 [업데이트][{report_kind}] {corp_name} 값이 변경/확정되었습니다. 시트를 덮어씁니다.")
-            worksheet.update(
-                range_name=f"A{row_idx}:{end_col}{row_idx}",
-                values=[new_row],
-            )
-            update_count += 1
-            time.sleep(1)
-
+    # =====================================================
+    # 결과 로그
+    # =====================================================
     if update_count > 0:
-        print(f"✅ 유상/무상/유무상: 기존 데이터 {update_count}건 자동 업데이트 완료!")
-    else:
-        print("✅ 유상/무상/유무상: 새로 추가할 공시는 없으며 데이터 최신화 점검을 마쳤습니다.")
+        print(f"✅ 기존 데이터 {update_count}건 자동 업데이트 완료!")
+
+    if update_count == 0 and insert_count == 0:
+        print("✅ 새로 추가/수정할 공시는 없으며 데이터 최신화 점검을 마쳤습니다.")
 
 
 if __name__ == "__main__":
