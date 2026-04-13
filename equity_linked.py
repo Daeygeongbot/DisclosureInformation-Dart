@@ -406,12 +406,13 @@ def get_and_update_bonds():
 
             if sheet_row_padded != new_row_str:
                 corp_name = row.get('corp_name', '')
-                print(f" 🔄 [업데이트] {corp_name} 값이 변경/확정되었습니다. 상단으로 이동합니다.")
-
-                # 기존 행 삭제 후 상단 삽입
-                worksheet.delete_rows(row_idx)
-                worksheet.insert_rows([new_row], row=2, value_input_option="USER_ENTERED")
-
+                print(f" 🔄 [업데이트] {corp_name} 값이 변경/확정되었습니다. 시트를 덮어씁니다.")
+            
+                worksheet.update(
+                    values=[new_row],
+                    range_name=f'A{row_idx}'
+                )
+            
                 update_count += 1
                 time.sleep(1)
 
