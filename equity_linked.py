@@ -232,7 +232,6 @@ def get_and_update_bonds():
     start_date = (datetime.now() - timedelta(days=7)).strftime('%Y%m%d')
 
     print("최근 7일 주식연계채권(CB, BW, EB) 공시 탐색 중...")
-
     print(f"{start_date} ~ {end_date} 주식연계채권(CB, BW, EB) 공시 탐색 중...")
 
     # 공시 목록 호출
@@ -296,19 +295,23 @@ def get_and_update_bonds():
     worksheet = sh.worksheet('D_주식연계채권')
     cls_map = {'Y': '유가', 'K': '코스닥', 'N': '코넥스', 'E': '기타'}
 
+    def rebuild_rcept_row_map():
+        current_sheet_data = worksheet.get_all_values()
+        current_rcept_row_map = {
+            row[RCEPT_NO_COL_IDX]: i + 1
+            for i, row in enumerate(current_sheet_data)
+            if len(row) > RCEPT_NO_COL_IDX and str(row[RCEPT_NO_COL_IDX]).strip()
+        }
+        current_existing_rcept_nos = list(current_rcept_row_map.keys())
+        return current_sheet_data, current_rcept_row_map, current_existing_rcept_nos
+
     # 시트의 기존 데이터 읽기
-    all_sheet_data = worksheet.get_all_values()
-    rcept_row_map = {
-        row[RCEPT_NO_COL_IDX]: i + 1
-        for i, row in enumerate(all_sheet_data)
-        if len(row) > RCEPT_NO_COL_IDX
-    }
-    existing_rcept_nos = list(rcept_row_map.keys())
+    all_sheet_data, rcept_row_map, existing_rcept_nos = rebuild_rcept_row_map()
 
     for config in bond_configs:
         print(f"\n[{config['type']}] 데이터 확인 중...")
         df_filtered = all_filings[all_filings['report_nm'].str.contains(config['keyword'], na=False)].copy()
-        
+
         if df_filtered.empty:
             print(f"ℹ️ {config['type']} 공시가 없습니다.")
             continue
@@ -316,13 +319,13 @@ def get_and_update_bonds():
         # rcept_no / report_nm 매핑용
         df_filtered['rcept_no'] = df_filtered['rcept_no'].astype(str)
         df_report_map = df_filtered[['rcept_no', 'report_nm']].drop_duplicates(subset=['rcept_no'])
-            
+
         corp_codes = df_filtered['corp_code'].astype(str).unique()
         detail_dfs = []
 
         # 상세 API는 최초접수일 기준 이슈가 있을 수 있어 조회 시작일을 넉넉하게 확장
         detail_start_date = (datetime.strptime(start_date, "%Y%m%d") - timedelta(days=180)).strftime("%Y%m%d")
-        
+
         for code in corp_codes:
             detail_params = {
                 'crtfc_key': dart_key,
@@ -336,24 +339,27 @@ def get_and_update_bonds():
             )
             if not df_detail.empty:
                 detail_dfs.append(df_detail)
-                
+
         if not detail_dfs:
             continue
-            
+
         df_combined = pd.concat(detail_dfs, ignore_index=True)
         df_combined['rcept_no'] = df_combined['rcept_no'].astype(str)
-        
+
         target_rcept_nos = df_filtered['rcept_no'].unique()
         df_merged = df_combined[df_combined['rcept_no'].isin(target_rcept_nos)].copy()
 
-        # 💡 [추가] report_nm 붙이기
+        # report_nm 붙이기
         df_merged = df_merged.merge(df_report_map, on='rcept_no', how='left')
-        
+
+        # 최신 접수번호가 위로 오도록 정렬
+        df_merged = df_merged.sort_values('rcept_no', ascending=False).copy()
+
         # ========================================================
-        # 🟢 1. 신규 데이터 추가 로직
+        # 🟢 1. 신규 데이터 상단 삽입 로직
         # ========================================================
-        new_data_df = df_merged[~df_merged['rcept_no'].astype(str).isin(existing_rcept_nos)]
-        
+        new_data_df = df_merged[~df_merged['rcept_no'].astype(str).isin(existing_rcept_nos)].copy()
+
         data_to_add = []
         for _, row in new_data_df.iterrows():
             rcept_no = str(row.get('rcept_no', ''))
@@ -361,50 +367,56 @@ def get_and_update_bonds():
             xml_data = extract_bond_xml_details(dart_key, rcept_no)
             new_row = make_row_data(row, xml_data, config, cls_map)
             data_to_add.append(new_row)
-            
-        if data_to_add:
-            worksheet.append_rows(data_to_add)
-            print(f"✅ {config['type']}: 신규 데이터 {len(data_to_add)}건 추가 완료!")
 
-        # 신규 append 후 row map 갱신
         if data_to_add:
-            all_sheet_data = worksheet.get_all_values()
-            rcept_row_map = {
-                row[RCEPT_NO_COL_IDX]: i + 1
-                for i, row in enumerate(all_sheet_data)
-                if len(row) > RCEPT_NO_COL_IDX
-            }
-            existing_rcept_nos = list(rcept_row_map.keys())
+            worksheet.insert_rows(data_to_add, row=2, value_input_option="USER_ENTERED")
+            print(f"✅ {config['type']}: 신규 데이터 {len(data_to_add)}건 상단 추가 완료!")
+
+            # 상단 삽입 후 row map 갱신
+            all_sheet_data, rcept_row_map, existing_rcept_nos = rebuild_rcept_row_map()
 
         # ========================================================
-        # 🔄 2. 기존 데이터 재검사 및 덮어쓰기 로직
+        # 🔄 2. 기존 데이터 재검사 후 상단 이동 로직
         # ========================================================
-        existing_data_df = df_merged[df_merged['rcept_no'].astype(str).isin(existing_rcept_nos)]
+        existing_data_df = df_merged[df_merged['rcept_no'].astype(str).isin(existing_rcept_nos)].copy()
         update_count = 0
-        
+
         for _, row in existing_data_df.iterrows():
             rcept_no = str(row.get('rcept_no', ''))
+
+            # 매번 최신 row map 기준으로 찾기
             row_idx = rcept_row_map.get(rcept_no)
             if not row_idx:
                 continue
 
+            if row_idx - 1 >= len(all_sheet_data):
+                continue
+
             # 시트 현재 값
             sheet_row = all_sheet_data[row_idx - 1]
-            
+
             # 최신 값 재구성
             xml_data = extract_bond_xml_details(dart_key, rcept_no)
             new_row = make_row_data(row, xml_data, config, cls_map)
-            
+
             # 길이 26으로 맞춘 뒤 비교
             sheet_row_padded = sheet_row + [''] * (TOTAL_COLS - len(sheet_row))
-            new_row_str = [str(x) for x in new_row]
+            sheet_row_padded = [str(x).strip() for x in sheet_row_padded[:TOTAL_COLS]]
+            new_row_str = [str(x).strip() for x in new_row]
 
             if sheet_row_padded != new_row_str:
                 corp_name = row.get('corp_name', '')
-                print(f" 🔄 [업데이트] {corp_name} 값이 변경/확정되었습니다. 시트를 덮어씁니다.")
-                worksheet.update(values=[new_row], range_name=f'A{row_idx}')
+                print(f" 🔄 [업데이트] {corp_name} 값이 변경/확정되었습니다. 상단으로 이동합니다.")
+
+                # 기존 행 삭제 후 상단 삽입
+                worksheet.delete_rows(row_idx)
+                worksheet.insert_rows([new_row], row=2, value_input_option="USER_ENTERED")
+
                 update_count += 1
                 time.sleep(1)
+
+                # 행 번호가 전부 바뀌므로 즉시 갱신
+                all_sheet_data, rcept_row_map, existing_rcept_nos = rebuild_rcept_row_map()
 
         if update_count > 0:
             print(f"✅ {config['type']}: 기존 데이터 {update_count}건 자동 업데이트 완료!")
